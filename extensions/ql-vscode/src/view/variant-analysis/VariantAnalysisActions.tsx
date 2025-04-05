@@ -68,6 +68,20 @@ export const VariantAnalysisActions = ({
         <>
           <Button
             appearance="secondary"
+            // ! Just mimic 'copy repository' for now.
+            onClick={onCopyRepositoryListClick}
+            disabled={copyRepositoryListDisabled}
+          >
+            {chooseText({
+              hasSelectedRepositories,
+              hasFilteredRepositories,
+              normalText: "View Autofixes",
+              selectedText: "View Autofixes for selected results",
+              filteredText: "View Autofixes for filtered results",
+            })}
+          </Button>
+          <Button
+            appearance="secondary"
             onClick={onCopyRepositoryListClick}
             disabled={copyRepositoryListDisabled}
           >
