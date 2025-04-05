@@ -967,6 +967,41 @@ export class VariantAnalysisManager
     );
   }
 
+  // ! TODO: implementation!
+  public async viewAutofixes(
+    variantAnalysisId: number,
+    filterSort: RepositoriesFilterSortStateWithIds = defaultFilterSortState,
+  ) {
+    const variantAnalysis = this.variantAnalyses.get(variantAnalysisId);
+    if (!variantAnalysis) {
+      throw new Error(`No variant analysis with id: ${variantAnalysisId}`);
+    }
+
+    const filteredRepositories = filterAndSortRepositoriesWithResults(
+      variantAnalysis.scannedRepos,
+      filterSort,
+    );
+
+    const fullNames = filteredRepositories
+      ?.filter((a) => a.resultCount && a.resultCount > 0)
+      .map((a) => a.repository.fullName);
+    if (!fullNames || fullNames.length === 0) {
+      return;
+    }
+
+    const text = [
+      "{",
+      `    "name": "new-repo-list",`,
+      `    "repositories": [`,
+      ...fullNames.slice(0, -1).map((repo) => `        "${repo}",`),
+      `        "${fullNames[fullNames.length - 1]}"`,
+      `    ]`,
+      "}",
+    ];
+
+    await env.clipboard.writeText(text.join(EOL));
+  }
+
   public async copyRepoListToClipboard(
     variantAnalysisId: number,
     filterSort: RepositoriesFilterSortStateWithIds = defaultFilterSortState,
