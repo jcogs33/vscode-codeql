@@ -1011,8 +1011,19 @@ export class VariantAnalysisManager
     // ! am I doing anything I shouldn't with this loop and withProgress?
     // ! noticing some minor synchronization issues; try mimicing `await Promise.all(selectedDatabases.map((database) ...`
     // ! from `downloadDatabaseFromGitHub` in `download.ts`
+    const databaseStoragePath = `${this.storagePath}/${variantAnalysisId}/autofix-databases`;
     for (const nwo of fullNames) {
+      // * do not re-download database if it already exists
+      // * weak check based on just the standard folder name
+      const nwoWithDash = nwo.replace("/", "-");
+      if (await pathExists(join(databaseStoragePath, nwoWithDash))) {
+        void Window.showInformationMessage(
+          `Database for ${nwo} already exists at ${databaseStoragePath}. Not re-downloading.`,
+        );
+        continue;
+      }
       withProgress(
+        // ! Don't async here? Is that causing the synchronization issues
         async (progress) => {
           // ! lines 1017-1058 are mostly copied from `downloadGitHubDatabase` in extensions/ql-vscode/src/databases/database-fetcher.ts
           // ! refactor
@@ -1039,7 +1050,7 @@ export class VariantAnalysisManager
           const databaseFetcher = new DatabaseFetcher(
             this.app,
             this.dbm,
-            this.storagePath,
+            databaseStoragePath,
             this.cliServer,
           );
 
@@ -1066,6 +1077,8 @@ export class VariantAnalysisManager
       );
     }
 
+    // TODO (maybe): don't display downloaded databases in the workspace DB panel for now?; just download them, user can import later if want
+    // ! or if do keep in workspace DB panel, maybe add "mrva" suffix so clear where came from?
     // TODO: unzip source root archives and save paths in variables to use with cocofix (easy-ish)
     // TODO: get .sarif (or .bqrs) files for each repo using variantAnalysisId to find path where stored (easy-ish)
     // ! caveat that some results might only have .bqrs, and I can't figure out how to convert .bqrs to .sarif yet
