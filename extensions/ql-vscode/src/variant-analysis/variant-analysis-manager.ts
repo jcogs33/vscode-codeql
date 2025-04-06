@@ -101,6 +101,7 @@ import { getEnterpriseUri, addDatabaseSourceToWorkspace } from "../config";
 import { convertGithubNwoToDatabaseUrl } from "../databases/github-databases/api";
 import { DatabaseFetcher } from "../databases/database-fetcher";
 import type { DatabaseManager } from "../databases/local-databases";
+import { readRepoTask } from "./repo-tasks-store";
 
 const maxRetryCount = 3;
 
@@ -1012,6 +1013,7 @@ export class VariantAnalysisManager
     // ! noticing some minor synchronization issues; try mimicing `await Promise.all(selectedDatabases.map((database) ...`
     // ! from `downloadDatabaseFromGitHub` in `download.ts`
     const databaseStoragePath = `${this.storagePath}/${variantAnalysisId}/autofix-databases`;
+    const repoTaskStoragePath = `${this.storagePath}/${variantAnalysisId}`;
     for (const nwo of fullNames) {
       // * do not re-download database if it already exists
       // * weak check based on just the standard folder name
@@ -1022,6 +1024,17 @@ export class VariantAnalysisManager
         );
         continue;
       }
+
+      // * get the databaseCommitSha for the repo
+      const repoTask: VariantAnalysisRepositoryTask = await readRepoTask(
+        join(repoTaskStoragePath, nwo),
+      );
+      if (!repoTask.databaseCommitSha) {
+        // ! need this check to allow `null` type below, else wants `undefined`
+        throw new Error("Missing database commit SHA");
+      }
+      const actualCommitOid: string | null = repoTask.databaseCommitSha;
+
       withProgress(
         // ! Don't async here? Is that causing the synchronization issues
         async (progress) => {
@@ -1046,6 +1059,13 @@ export class VariantAnalysisManager
             databaseCreatedAt,
             commitOid,
           } = result;
+
+          // * make sure commitOid is the _actual_ commit used by the MRVA run
+          if (actualCommitOid && actualCommitOid !== commitOid) {
+            void this.app.logger.log(
+              `Not using commit OID ${commitOid} since it may differ from the actual commit SHA used by the MRVA run.`,
+            );
+          }
 
           const databaseFetcher = new DatabaseFetcher(
             this.app,
