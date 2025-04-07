@@ -12,7 +12,7 @@ import type {
   VariantAnalysisRepositoryTask,
 } from "./shared/variant-analysis";
 import { window as Window } from "vscode";
-import { pathExists } from "fs-extra";
+import { pathExists, ensureDir } from "fs-extra";
 import { join } from "path";
 import type { Credentials } from "../common/authentication";
 import { withProgress } from "../common/vscode/progress";
@@ -126,10 +126,10 @@ export async function viewAutofixesForVariantAnalysisResults(
         );
       }
 
-      // Create directory path for storing the downloaded databases.
-      const databasesStoragePath = `${storagePath}/${variantAnalysisId}/autofix-databases`;
-      // Find path to the variant analysis' `repo_task.json` file.
+      // Find path to the variant analysis information.
       const variantAnalysisStoragePath = `${storagePath}/${variantAnalysisId}`;
+      // Create directory path for storing the downloaded databases.
+      const databasesStoragePath = `${variantAnalysisStoragePath}/autofix/databases`;
 
       // ! For now, do not make the downloaded database selected
       // ! in the database panel. Consider changing this in the
@@ -277,6 +277,20 @@ export async function viewAutofixesForVariantAnalysisResults(
             `Expected to find exactly one \`*.sarif\` file, but found ${sarifFiles.length}.`,
           );
         }
+
+        // Create output directory for autofix results.
+        const autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
+        // Ensures that the directory exists. If the directory structure does not exist, it is created.
+        await ensureDir(autofixOutputStoragePath);
+
+        // ***** Run autofix on the selected repo.
+        // ./bin/cocofix.js --model capi-dev-4o --dev \
+        // --sarif <sarifFiles[0]> \
+        // --source-root <srcRootPath> \
+        // --format=text --output <output.txt> --diff-style diff \ // ! or do text instead of diff if want line of "=" between fixes
+        // --transcript <output-dir>/transcript.md \
+        // --fix-description <output-dir>/fix-description.md \
+        // --sarif-output <output-dir>/sarif-output.md
       }
     },
     {
@@ -289,7 +303,6 @@ export async function viewAutofixesForVariantAnalysisResults(
   );
 }
 
-// TODO: mkdir for autofix output: autofix-output/${nwoWithDash}
 // TODO: pass source-root, sarif, and output-dir for each repo to cocofix (easy once have the info; may need to assemble the info better (i.e. in a Type) so don't have to piece together three different arrays)
 // TODO: run cocofix and limit to max of 3 autofixes per repo (medium-ish; easy to limit to first alert using `--only-alert-number`, but how to limit to first 3? (check how DCA is doing round-robin))
 // TODO: display cocofix results in a new view (or in terminal if easier? or just in combined markdown file for now?) (medium-ish; reuse basics of MRVA view or of compare performance view?)
