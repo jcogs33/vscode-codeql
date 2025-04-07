@@ -80,7 +80,7 @@ export async function viewAutofixesForVariantAnalysisResults(
       // Create directory path for storing the downloaded databases.
       const databasesStoragePath = `${storagePath}/${variantAnalysisId}/autofix-databases`;
       // Find path to the variant analysis' `repo_task.json` file.
-      const repoTaskStoragePath = `${storagePath}/${variantAnalysisId}`;
+      const variantAnalysisStoragePath = `${storagePath}/${variantAnalysisId}`;
 
       // ! For now, do not make the downloaded database selected
       // ! in the database panel. Consider changing this in the
@@ -95,6 +95,8 @@ export async function viewAutofixesForVariantAnalysisResults(
 
       // Initialize an array to store the source root paths.
       const sourceRootPaths: string[] = [];
+      // Initialize an array to store the sarif paths.
+      const sarifPaths: string[] = [];
 
       const octokit = await credentials.getOctokit();
 
@@ -122,9 +124,9 @@ export async function viewAutofixesForVariantAnalysisResults(
         }
 
         // Read the contents of the variant analysis' `repo_task.json` file.
-        const repoTask: VariantAnalysisRepositoryTask = await readRepoTask(
-          join(repoTaskStoragePath, nwo),
-        );
+        const repoStoragePath = join(variantAnalysisStoragePath, nwo);
+        const repoTask: VariantAnalysisRepositoryTask =
+          await readRepoTask(repoStoragePath);
         // Check if the `databaseCommitSha` exists in the file contents.
         // We need this check to allow the `null` type below, else
         // TypeScript wants `undefined`.
@@ -212,6 +214,20 @@ export async function viewAutofixesForVariantAnalysisResults(
 
         // Store the source root path in an array to use with autofix.
         sourceRootPaths.push(srcRootPath);
+
+        // Get results directory path.
+        const repoResultsStoragePath = join(repoStoragePath, "results");
+        // Find sarif file.
+        const sarifFiles = await glob(`${repoResultsStoragePath}/**/*.sarif`);
+        if (sarifFiles.length === 1) {
+          // Store the sarif path in an array to use with autofix.
+          sarifPaths.push(sarifFiles[0]);
+        } else {
+          // ! Should not stop overall function execution by throwing an error here?
+          throw new Error(
+            `Expected to find exactly one \`*.sarif\` file, but found ${sarifFiles.length}.`,
+          );
+        }
       }
     },
     {
@@ -224,7 +240,6 @@ export async function viewAutofixesForVariantAnalysisResults(
   );
 }
 
-// TODO: get .sarif (or .bqrs) files for each repo using variantAnalysisId to find path where stored (easy-ish)
 // TODO: generate qhelp override (easy-ish)
 // TODO: mkdir or otherwise figure out where to store the output from cocofix (medium-ish; try to re-use where extension stores other output?)
 // TODO: pass source-root, sarif, and output-dir for each repo to cocofix (easy once have the info)
