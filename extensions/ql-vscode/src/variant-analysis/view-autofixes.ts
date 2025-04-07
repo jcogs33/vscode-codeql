@@ -23,6 +23,7 @@ import type { NotificationLogger } from "../common/logging";
 import type { ProgressCallback } from "../common/vscode/progress";
 import { unzipToDirectoryConcurrently } from "../common/unzip-concurrently";
 import { glob } from "glob";
+import { tryGetQueryMetadata } from "../codeql-cli/query-metadata";
 
 // Limit to three repos when generating autofixes so not sending
 // too many requests to autofix. Since we only need to validate
@@ -229,6 +230,51 @@ export async function viewAutofixesForVariantAnalysisResults(
           );
         }
       }
+
+      // Get path to the query used by the variant analysis.
+      const queryPath = variantAnalysis.query.filePath;
+      const queryPathNoExt = queryPath.slice(0, -3);
+      // Get the path to the query help, which may be either a `.qhelp` or a `.md` file.
+      // ! Relies on query and qhelp file names matching.
+      const queryHelpPathQhelp = `${queryPathNoExt}.qhelp`;
+      const queryHelpPathMarkdown = `${queryPathNoExt}.md`;
+      let queryHelpPath: string;
+
+      // Confirm which style of query help file exists.
+      if (await pathExists(queryHelpPathQhelp)) {
+        queryHelpPath = queryHelpPathQhelp;
+      } else if (await pathExists(queryHelpPathMarkdown)) {
+        queryHelpPath = queryHelpPathMarkdown;
+      } else {
+        throw new Error(
+          `Could not find query help file at either ${queryHelpPathQhelp} or ${queryHelpPathMarkdown}.`,
+        );
+      }
+
+      // Read the query metadata if possible.
+      const metadata = await tryGetQueryMetadata(cliServer, queryPath);
+      if (!metadata) {
+        throw new Error(`Could not get query metadata for ${queryPath}.`);
+      }
+      if (!metadata.id) {
+        throw new Error(`Query metadata for ${queryPath} is missing an ID.`);
+      }
+      // Get the query ID for the overridden query help's filename.
+      const queryId = metadata.id;
+      // Replace `/` with `-` to get the query ID with a dash.
+      // `replaceAll` since some query IDs have multiple slashes.
+      const queryIdWithDash = queryId.replaceAll("/", "-");
+
+      // Get the path to the output directory for overriding the query help.
+      // TODO: unhardcode once figure out how to check for local autofix installation
+      // TODO: maybe check how DCA with local autofix handles that.
+      const queryHelpOverrideDirectory = `/Users/jcogs33/Documents/codeml-autofix/cocofix/prompt-templates/qhelps/${queryIdWithDash}.md`;
+
+      // Generate the query help and output to the override directory.
+      await cliServer.generateQueryHelp(
+        queryHelpPath,
+        queryHelpOverrideDirectory,
+      );
     },
     {
       title: "Generating Autofixes",
@@ -240,8 +286,7 @@ export async function viewAutofixesForVariantAnalysisResults(
   );
 }
 
-// TODO: generate qhelp override (easy-ish)
-// TODO: mkdir or otherwise figure out where to store the output from cocofix (medium-ish; try to re-use where extension stores other output?)
+// TODO: mkdir or otherwise figure out where to store the output from cocofix (easy-ish; try to re-use where extension stores other output? create 'autofixes' directory with 'databases' and 'results' subdirectories?)
 // TODO: pass source-root, sarif, and output-dir for each repo to cocofix (easy once have the info)
 // TODO: run cocofix and limit to max of 3 autofixes per repo (medium-ish; easy to limit to first alert using `--only-alert-number`, but how to limit to first 3? (check how DCA is doing round-robin))
-// TODO: display cocofix results in a new view (or in terminal if easier?) (medium-ish; reuse basics of MRVA view or of compare performance view?)
+// TODO: display cocofix results in a new view (or in terminal if easier? or just in combine markdown file for now?) (medium-ish; reuse basics of MRVA view or of compare performance view?)
