@@ -24,6 +24,8 @@ import type { ProgressCallback } from "../common/vscode/progress";
 import { unzipToDirectoryConcurrently } from "../common/unzip-concurrently";
 import { glob } from "glob";
 import { tryGetQueryMetadata } from "../codeql-cli/query-metadata";
+import type { execFileSync } from "child_process";
+import { spawn } from "child_process";
 
 // Limit to three repos when generating autofixes so not sending
 // too many requests to autofix. Since we only need to validate
@@ -90,10 +92,13 @@ export async function viewAutofixesForVariantAnalysisResults(
       // `replaceAll` since some query IDs have multiple slashes.
       const queryIdWithDash = queryId.replaceAll("/", "-");
 
-      // Get the path to the output directory for overriding the query help.
+      // Get the path to the local autofix installation.
       // TODO: unhardcode once figure out how to check for local autofix installation
       // TODO: maybe check how DCA with local autofix handles that.
-      const queryHelpOverrideDirectory = `/Users/jcogs33/Documents/codeml-autofix/cocofix/prompt-templates/qhelps/${queryIdWithDash}.md`;
+      const localAutofixPath = `/Users/jcogs33/Documents/codeml-autofix/cocofix`;
+
+      // Get the path to the output directory for overriding the query help.
+      const queryHelpOverrideDirectory = `${localAutofixPath}/prompt-templates/qhelps/${queryIdWithDash}.md`;
 
       // Generate the query help and output to the override directory.
       await cliServer.generateQueryHelp(
@@ -278,10 +283,27 @@ export async function viewAutofixesForVariantAnalysisResults(
           );
         }
 
-        // Create output directory for autofix results.
+        // Create output directory for all autofix results.
         const autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
         // Ensures that the directory exists. If the directory structure does not exist, it is created.
-        await ensureDir(autofixOutputStoragePath);
+        // await ensureDir(autofixOutputStoragePath); // ! don't need if creating for each below
+
+        // Create output directories for repo's autofix results.
+        const repoAutofixOutputStoragePath = `${autofixOutputStoragePath}/${nwoWithDash}`;
+        await ensureDir(repoAutofixOutputStoragePath);
+        const outputTextFile = join(repoAutofixOutputStoragePath, "output.txt");
+        const transcriptFile = join(
+          repoAutofixOutputStoragePath,
+          "transcript.md",
+        );
+        const fixDescriptionFile = join(
+          repoAutofixOutputStoragePath,
+          "fix-description.md",
+        );
+        const sarifOutputFile = join(
+          repoAutofixOutputStoragePath,
+          "output.sarif",
+        );
 
         // ***** Run autofix on the selected repo.
         // ./bin/cocofix.js --model capi-dev-4o --dev \
@@ -290,7 +312,52 @@ export async function viewAutofixesForVariantAnalysisResults(
         // --format=text --output <output.txt> --diff-style diff \ // ! or do text instead of diff if want line of "=" between fixes
         // --transcript <output-dir>/transcript.md \
         // --fix-description <output-dir>/fix-description.md \
-        // --sarif-output <output-dir>/sarif-output.md
+        // --sarif-output <output-dir>/output.sarif
+        // TODO: re-write this?
+        // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
+        const cocofixBin = `${localAutofixPath}/bin/cocofix.js`; // TODO: unhardcode later; maybe require config like DCA?
+        await execAutofix(
+          logger,
+          cocofixBin,
+          [
+            "--sarif",
+            sarifFiles[0],
+            "--source-root",
+            srcRootPath,
+            "--model",
+            "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
+            "--dev",
+            "--format",
+            "text",
+            "--output",
+            outputTextFile,
+            "--diff-style",
+            "diff",
+            "--fix-description",
+            fixDescriptionFile,
+            "--transcript",
+            transcriptFile,
+            "--sarif-output",
+            sarifOutputFile,
+          ],
+          {
+            cwd: repoAutofixOutputStoragePath,
+            env: {
+              CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
+              //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
+              //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
+              PATH: process.env.PATH, // ! might not need this.
+            },
+          },
+          true, // ! just set to true for now
+        );
+        // ! don't want to return yet, maybe when refactor
+        // return {
+        //   outputTextFile,
+        //   fixDescriptionFile,
+        //   transcriptFile,
+        //   sarifOutputFile,
+        // };
       }
     },
     {
@@ -303,6 +370,34 @@ export async function viewAutofixesForVariantAnalysisResults(
   );
 }
 
-// TODO: pass source-root, sarif, and output-dir for each repo to cocofix (easy once have the info; may need to assemble the info better (i.e. in a Type) so don't have to piece together three different arrays)
-// TODO: run cocofix and limit to max of 3 autofixes per repo (medium-ish; easy to limit to first alert using `--only-alert-number`, but how to limit to first 3? (check how DCA is doing round-robin))
+// TODO: rewrite this?
+// ! Copied from DCA for quick PoC. See https://github.com/github/codeql-dca/blob/4191e85e526a350c40636ab8ff5c18a29a1fba2d/packages/utils/src/util.ts#L236
+function execAutofix(
+  logger: NotificationLogger,
+  bin: string,
+  args: string[],
+  options: Parameters<typeof execFileSync>[2],
+  showCommand?: boolean,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const cwd = options?.cwd || process.cwd();
+      if (showCommand) {
+        void logger.log(`Spawning '${bin} ${args.join(" ")}' in ${cwd}`);
+      }
+      if (args.some((a) => a === undefined || a === "")) {
+        throw new Error(
+          `Invalid empty or undefined arguments: ${args.join(" ")}`,
+        );
+      }
+      const p = spawn(bin, args, { stdio: [0, 1, 2], ...options });
+      p.on("error", reject);
+      p.on("exit", (code) => (code === 0 ? resolve() : reject(code)));
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// TODO: limit to max of 3 autofixes per repo (medium-ish; easy to limit to first alert using `--only-alert-number`, but how to limit to first 3? (check how DCA is doing round-robin --> seems to rewrite the input file :(, I don't want to do that))
 // TODO: display cocofix results in a new view (or in terminal if easier? or just in combined markdown file for now?) (medium-ish; reuse basics of MRVA view or of compare performance view?)
