@@ -73,6 +73,8 @@ import type {
   VariantAnalysisCommands,
 } from "../common/commands";
 import { exportVariantAnalysisResults } from "./export-results";
+import { viewAutofixesForVariantAnalysisResults } from "./view-autofixes";
+
 import {
   readRepoStates,
   REPO_STATES_FILENAME,
@@ -97,11 +99,8 @@ import { resolveCodeScanningQueryPack } from "./code-scanning-pack";
 import { isSarifResultsQueryKind } from "../common/query-metadata";
 import { isVariantAnalysisEnabledForGitHubHost } from "./ghec-dr";
 import type { VariantAnalysisConfig } from "../config";
-import { getEnterpriseUri, addDatabaseSourceToWorkspace } from "../config";
-import { convertGithubNwoToDatabaseUrl } from "../databases/github-databases/api";
-import { DatabaseFetcher } from "../databases/database-fetcher";
+import { getEnterpriseUri } from "../config";
 import type { DatabaseManager } from "../databases/local-databases";
-import { readRepoTask } from "./repo-tasks-store";
 
 const maxRetryCount = 3;
 
@@ -972,142 +971,21 @@ export class VariantAnalysisManager
     );
   }
 
-  // ! TODO: finish and refactor implementation!
   public async viewAutofixes(
     variantAnalysisId: number,
     filterSort: RepositoriesFilterSortStateWithIds = defaultFilterSortState,
   ) {
-    // ! lines 983-999 are copied from `copyRepoListToClipboard`; refactor
-    const variantAnalysis = this.variantAnalyses.get(variantAnalysisId);
-    if (!variantAnalysis) {
-      throw new Error(`No variant analysis with id: ${variantAnalysisId}`);
-    }
-
-    // * get nwos of selected repos
-    const filteredRepositories = filterAndSortRepositoriesWithResults(
-      variantAnalysis.scannedRepos,
+    await viewAutofixesForVariantAnalysisResults(
+      variantAnalysisId,
       filterSort,
+      this.variantAnalyses,
+      this.app.credentials,
+      this.app.logger,
+      this.storagePath,
+      this.app,
+      this.dbm,
+      this.cliServer,
     );
-
-    let fullNames = filteredRepositories
-      ?.filter((a) => a.resultCount && a.resultCount > 0)
-      .map((a) => a.repository.fullName);
-    if (!fullNames || fullNames.length === 0) {
-      return;
-    }
-
-    // * limit to 3 repos for now
-    const MAX_NUM_REPOS: number = 3;
-    if (fullNames.length > MAX_NUM_REPOS) {
-      fullNames = fullNames.slice(0, MAX_NUM_REPOS);
-      void Window.showInformationMessage(
-        `Only the first ${MAX_NUM_REPOS} repos will be included in the Autofix results.`,
-      );
-    }
-
-    // * download the database for each repo
-    const language = variantAnalysis.language;
-    const octokit = await this.app.credentials.getOctokit();
-
-    // ! am I doing anything I shouldn't with this loop and withProgress?
-    // ! noticing some minor synchronization issues; try mimicing `await Promise.all(selectedDatabases.map((database) ...`
-    // ! from `downloadDatabaseFromGitHub` in `download.ts`
-    const databaseStoragePath = `${this.storagePath}/${variantAnalysisId}/autofix-databases`;
-    const repoTaskStoragePath = `${this.storagePath}/${variantAnalysisId}`;
-    for (const nwo of fullNames) {
-      // * do not re-download database if it already exists
-      // * weak check based on just the standard folder name
-      const nwoWithDash = nwo.replace("/", "-");
-      if (await pathExists(join(databaseStoragePath, nwoWithDash))) {
-        void Window.showInformationMessage(
-          `Database for ${nwo} already exists at ${databaseStoragePath}. Not re-downloading.`,
-        );
-        continue;
-      }
-
-      // * get the databaseCommitSha for the repo
-      const repoTask: VariantAnalysisRepositoryTask = await readRepoTask(
-        join(repoTaskStoragePath, nwo),
-      );
-      if (!repoTask.databaseCommitSha) {
-        // ! need this check to allow `null` type below, else wants `undefined`
-        throw new Error("Missing database commit SHA");
-      }
-      const actualCommitOid: string | null = repoTask.databaseCommitSha;
-
-      withProgress(
-        // ! Don't async here? Is that causing the synchronization issues
-        async (progress) => {
-          // ! lines 1017-1058 are mostly copied from `downloadGitHubDatabase` in extensions/ql-vscode/src/databases/database-fetcher.ts
-          // ! refactor
-          const result = await convertGithubNwoToDatabaseUrl(
-            nwo,
-            octokit,
-            progress,
-            language,
-          );
-
-          if (!result) {
-            return;
-          }
-
-          const {
-            databaseUrl,
-            name,
-            owner,
-            databaseId,
-            databaseCreatedAt,
-            commitOid,
-          } = result;
-
-          // * make sure commitOid is the _actual_ commit used by the MRVA run
-          if (actualCommitOid && actualCommitOid !== commitOid) {
-            void this.app.logger.log(
-              `Not using commit OID ${commitOid} since it may differ from the actual commit SHA used by the MRVA run.`,
-            );
-          }
-
-          const databaseFetcher = new DatabaseFetcher(
-            this.app,
-            this.dbm,
-            databaseStoragePath,
-            this.cliServer,
-          );
-
-          const makeSelected = false;
-          const addSourceArchiveFolder = addDatabaseSourceToWorkspace();
-
-          await databaseFetcher.downloadGitHubDatabaseFromUrl(
-            databaseUrl,
-            databaseId,
-            databaseCreatedAt,
-            commitOid,
-            owner,
-            name,
-            octokit,
-            progress,
-            makeSelected,
-            addSourceArchiveFolder,
-          );
-        },
-        {
-          title: "Fetching databases for Autofix",
-          cancellable: false, // ! maybe make cancellable?
-        },
-      );
-    }
-
-    // TODO (maybe): don't display downloaded databases in the workspace DB panel for now?; just download them, user can import later if want
-    // ! or if do keep in workspace DB panel, maybe add "mrva" suffix so clear where came from?
-    // TODO: unzip source root archives and save paths in variables to use with cocofix (easy-ish)
-    // TODO: get .sarif (or .bqrs) files for each repo using variantAnalysisId to find path where stored (easy-ish)
-    // ! caveat that some results might only have .bqrs, and I can't figure out how to convert .bqrs to .sarif yet
-    // ! attempts at using `bqrs interpret` are throwing errors about a missing run-info[...].yml file...
-    // TODO: generate qhelp override (easy-ish)
-    // TODO: mkdir or otherwise figure out where to store the output from cocofix (medium-ish; try to re-use where extension stores other output?)
-    // TODO: pass source-root, sarif, and output-dir for each repo to cocofix (easy once have the info)
-    // TODO: run cocofix and limit to max of 3 autofixes per repo (medium-ish; easy to limit to first alert using `--only-alert-number`, but how to limit to first 3? (check how DCA is doing round-robin))
-    // TODO: display cocofix results in a new view (or in terminal if easier?) (medium-ish; reuse basics of MRVA view or of compare performance view?)
   }
 
   public async copyRepoListToClipboard(
