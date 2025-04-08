@@ -27,6 +27,7 @@ import { tryGetQueryMetadata } from "../codeql-cli/query-metadata";
 import type { execFileSync } from "child_process";
 import { spawn } from "child_process";
 import { readFile, writeFile, unlink } from "fs/promises";
+import { tryOpenExternalFile } from "../common/vscode/external-files";
 
 // Limit to three repos when generating autofixes so not sending
 // too many requests to autofix. Since we only need to validate
@@ -480,13 +481,20 @@ export async function viewAutofixesForVariantAnalysisResults(
 
       // Output results from ALL repos to a combined markdown file.
       // ! single file case with `mergeFiles` seems fine
+      const combinedOutputTextFile = join(
+        autofixOutputStoragePath,
+        "combined-output.md",
+      );
       await mergeFiles(
         outputTextFiles,
-        join(autofixOutputStoragePath, "full-output.md"),
+        combinedOutputTextFile,
         "<details><summary>Fix suggestion details</summary>\n\n```diff\n",
         "```\n\n</details>\n\n ### Notes\n - placeholder\n\n",
         false,
       );
+
+      // Open the combined markdown file.
+      await tryOpenExternalFile(app.commands, combinedOutputTextFile);
     },
     {
       title: "Generating Autofixes",
