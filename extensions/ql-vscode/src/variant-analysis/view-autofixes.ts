@@ -37,6 +37,22 @@ const MAX_NUM_REPOS: number = 3;
 // Similarly, limit to three fixes per repo.
 const MAX_NUM_FIXES: number = 3;
 
+// ! Main TODOs:
+
+// ! For myself:
+// ! - Refactor most of `viewAutofixesForVariantAnalysisResults` into helper functions.
+// ! - Re-organize code order. Fail early if missing anything that is required to run autofix.
+// ! - Parallelize anything that can be parallelized. e.g. Source root archive downloading, etc.
+// ! - Remove database downloading and instead download source code directly for a slightly faster experience. (see DCA's cve-download)
+
+// ! For PR, if go that direction:
+// ! - Local environment handling (e.g. checking for local autofix installation, etc. (see DCA))
+// ! - Canary with error for non-internal users.
+// ! - More error handling.
+// ! - Testing.
+
+// ! See other notes and comments below for more TODOs.
+
 /**
  * TODO: doc
  */
