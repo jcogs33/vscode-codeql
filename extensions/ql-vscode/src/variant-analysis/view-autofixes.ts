@@ -13,7 +13,7 @@ import type {
 } from "./shared/variant-analysis";
 import { window as Window } from "vscode";
 import { pathExists, ensureDir } from "fs-extra";
-import { join } from "path";
+import { join, basename, dirname } from "path";
 import type { Credentials } from "../common/authentication";
 import { withProgress } from "../common/vscode/progress";
 import type { App } from "../common/app";
@@ -138,6 +138,8 @@ export async function viewAutofixesForVariantAnalysisResults(
       const variantAnalysisStoragePath = `${storagePath}/${variantAnalysisId}`;
       // Create directory path for storing the downloaded databases.
       const databasesStoragePath = `${variantAnalysisStoragePath}/autofix/databases`;
+      // Create directory path for all autofix results.
+      const autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
 
       // ! For now, do not make the downloaded database selected
       // ! in the database panel. Consider changing this in the
@@ -154,6 +156,8 @@ export async function viewAutofixesForVariantAnalysisResults(
       const sourceRootPaths: string[] = [];
       // Initialize an array to store the sarif paths.
       const sarifPaths: string[] = [];
+      // Initialize an array to store the output files.
+      const outputTextFiles: string[] = [];
 
       const octokit = await credentials.getOctokit();
 
@@ -290,11 +294,6 @@ export async function viewAutofixesForVariantAnalysisResults(
           );
         }
 
-        // Create output directory for all autofix results.
-        const autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
-        // Ensures that the directory exists. If the directory structure does not exist, it is created.
-        // await ensureDir(autofixOutputStoragePath); // ! don't need if creating for each below
-
         // Create output directories for repo's autofix results.
         const repoAutofixOutputStoragePath = `${autofixOutputStoragePath}/${nwoWithDash}`;
         await ensureDir(repoAutofixOutputStoragePath);
@@ -332,13 +331,13 @@ export async function viewAutofixesForVariantAnalysisResults(
           // TODO: need to append to output file instead of overwriting. Or make three output files...
           // ! I don't like this approach, but I don't want to edit the input sarif.
           // ! DCA seems to re-write the input sarif for its round-robin (confirm).
-          const outputTextFiles: string[] = [];
+          const tempOutputTextFiles: string[] = [];
           const fixDescriptionFiles: string[] = [];
           const transcriptFiles: string[] = [];
           const sarifOutputFiles: string[] = [];
           for (let i = 0; i < MAX_NUM_FIXES; i++) {
             // TODO: rewrite all of this file merging logic. De-dup, etc.
-            outputTextFiles.push(
+            tempOutputTextFiles.push(
               `${outputTextFile}-${i.toString()}${txtFileExtension}`,
             );
             fixDescriptionFiles.push(
@@ -400,23 +399,31 @@ export async function viewAutofixesForVariantAnalysisResults(
           // merge the output files together
           // ! Caveat that autofix will call each alert "alert 0", so will look a bit odd in the merged output file.
           await mergeFiles(
-            outputTextFiles,
+            tempOutputTextFiles,
             outputTextFile + txtFileExtension,
+            "",
+            "",
             true,
           );
           await mergeFiles(
             fixDescriptionFiles,
             fixDescriptionFile + mdFileExtension,
+            "",
+            "",
             true,
           );
           await mergeFiles(
             transcriptFiles,
             transcriptFile + mdFileExtension,
+            "",
+            "",
             true,
           );
           await mergeFiles(
             sarifOutputFiles,
             sarifOutputFile + sarifFileExtension,
+            "",
+            "",
             true,
           ); // ! probably won't end up with valid sarif?
 
@@ -467,7 +474,19 @@ export async function viewAutofixesForVariantAnalysisResults(
           //   sarifOutputFile,
           // };
         }
+        // Save output text files for later merging into a single markdown file.
+        outputTextFiles.push(outputTextFile + txtFileExtension);
       }
+
+      // Output results from ALL repos to a combined markdown file.
+      // ! single file case with `mergeFiles` seems fine
+      await mergeFiles(
+        outputTextFiles,
+        join(autofixOutputStoragePath, "full-output.md"),
+        "<details><summary>Fix suggestion details</summary>\n\n```diff\n",
+        "```\n\n</details>\n\n ### Notes\n - placeholder\n\n",
+        false,
+      );
     },
     {
       title: "Generating Autofixes",
@@ -511,13 +530,35 @@ function execAutofix(
 async function mergeFiles(
   inputFiles: string[],
   outputFile: string,
+  frontSeparator: string = "",
+  backSeparator: string = "",
   deleteOriginalFiles: boolean = true,
 ): Promise<void> {
   try {
-    // Merge the files
+    // // Merge the files
+    // const contents = await Promise.all(
+    //   inputFiles.map((file) => readFile(file, "utf8")),
+    // );
+
+    // Merge the files with separators
     const contents = await Promise.all(
-      inputFiles.map((file) => readFile(file, "utf8")),
+      inputFiles.map(async (file) => {
+        const content = await readFile(file, "utf8");
+        return `${frontSeparator}${content}${backSeparator}`;
+      }),
     );
+
+    // Add owner/repo header above each set of contents if the separators are not empty strings
+    // ! this is getting too specific; separate/refactor this condition
+    if (frontSeparator !== "" && backSeparator !== "") {
+      // ! hopefully I can assume that the content order matches the input file order (confirm)
+      for (let i = 0; i < contents.length; i++) {
+        // extract the owner-repo folder name from the input file path
+        const parentDir = dirname(inputFiles[i]);
+        const ownerDashRepoName = basename(parentDir);
+        contents[i] = `## ${ownerDashRepoName}\n\n${contents[i]}`;
+      }
+    }
 
     // Write merged content
     await writeFile(outputFile, contents.join("\n"));
@@ -531,5 +572,3 @@ async function mergeFiles(
     throw error;
   }
 }
-
-// TODO: display cocofix results in a new view (or in terminal if easier? or just in combined markdown file for now?) (medium-ish; reuse basics of MRVA view or of compare performance view?)
