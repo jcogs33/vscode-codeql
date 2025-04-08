@@ -15,7 +15,7 @@ import { window as Window } from "vscode";
 import { pathExists, ensureDir } from "fs-extra";
 import { join, basename, dirname } from "path";
 import type { Credentials } from "../common/authentication";
-import { withProgress } from "../common/vscode/progress";
+import { withProgress, progressUpdate } from "../common/vscode/progress";
 import type { App } from "../common/app";
 import type { DatabaseManager } from "../databases/local-databases";
 import type { CodeQLCliServer } from "../codeql-cli/cli";
@@ -311,6 +311,8 @@ export async function viewAutofixesForVariantAnalysisResults(
         const sarifOutputFile = join(repoAutofixOutputStoragePath, "output");
 
         // ***** Run autofix on the selected repo.
+        progress(progressUpdate(1, 1, "Running Autofix"));
+
         // ./bin/cocofix.js --model capi-dev-4o --dev \
         // --sarif <sarifFiles[0]> \
         // --source-root <srcRootPath> \
@@ -483,7 +485,7 @@ export async function viewAutofixesForVariantAnalysisResults(
       // ! single file case with `mergeFiles` seems fine
       const combinedOutputTextFile = join(
         autofixOutputStoragePath,
-        "combined-output.md",
+        "autofix-output.md",
       );
       await mergeFiles(
         outputTextFiles,
@@ -573,7 +575,7 @@ async function mergeFiles(
 
     // Delete original files
     if (deleteOriginalFiles) {
-      await Promise.all(inputFiles.map((file) => unlink(file)));
+      await Promise.all(inputFiles.map((file) => unlink(file))); // ! should maybe use `remove` here instead of `unlink`
     }
   } catch (error) {
     console.error("Error merging files:", error);
