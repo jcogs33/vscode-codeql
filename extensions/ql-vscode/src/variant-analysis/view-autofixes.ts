@@ -140,7 +140,16 @@ export async function viewAutofixesForVariantAnalysisResults(
       // Create directory path for storing the downloaded databases.
       const databasesStoragePath = `${variantAnalysisStoragePath}/autofix/databases`;
       // Create directory path for all autofix results.
-      const autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
+      let autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
+      // if the path already exists, assume that it's a previous run and append "-n" to the end of the path
+      // where n is the next available number.
+      if (await pathExists(autofixOutputStoragePath)) {
+        let i = 1;
+        while (await pathExists(autofixOutputStoragePath + i.toString())) {
+          i++;
+        }
+        autofixOutputStoragePath = autofixOutputStoragePath += i.toString();
+      }
 
       // ! For now, do not make the downloaded database selected
       // ! in the database panel. Consider changing this in the
@@ -171,20 +180,6 @@ export async function viewAutofixesForVariantAnalysisResults(
       // ! only download three databases at most for now, but still annoying
       // ! to wait unnecessarily.
       for (const nwo of fullNames) {
-        const nwoWithDash = nwo.replace("/", "-");
-        // Do not re-download the database if it already exists.
-        // Do a simple check based on just the folder name,
-        // which should be of the form <owner>-<repo>. Caveat:
-        // this check could break if the folder name generation changes.
-        const repoDatabaseStoragePath = `${databasesStoragePath}/${nwoWithDash}`;
-        if (await pathExists(repoDatabaseStoragePath)) {
-          // Inform the user that the database already exists and continue.
-          void Window.showInformationMessage(
-            `Database for ${nwo} already exists at ${databasesStoragePath}. Not re-downloading.`,
-          );
-          continue;
-        }
-
         // Read the contents of the variant analysis' `repo_task.json` file.
         const repoStoragePath = join(variantAnalysisStoragePath, nwo);
         const repoTask: VariantAnalysisRepositoryTask =
@@ -207,55 +202,72 @@ export async function viewAutofixesForVariantAnalysisResults(
         const actualCommitOid: string | null = repoTask.databaseCommitSha;
         const repoResultCount = repoTask.resultCount;
 
-        // ! Much of the below is copied from `downloadGitHubDatabase`
-        // ! in extensions/ql-vscode/src/databases/database-fetcher.ts
-        // ! Refactor and share code?
-        // Get the database URL for the repo.
-        const result = await convertGithubNwoToDatabaseUrl(
-          nwo,
-          octokit,
-          progress,
-          language,
+        const nwoWithDash = nwo.replace("/", "-");
+        // Do not re-download the database if it already exists.
+        // Do a simple check based on just the folder name,
+        // which should be of the form <owner>-<repo>. Caveat:
+        // this check could break if the folder name generation changes.
+        const repoDatabaseStoragePath = `${databasesStoragePath}/${nwoWithDash}`;
+        const databaseExists: boolean = await pathExists(
+          repoDatabaseStoragePath,
         );
-        if (!result) {
-          return;
+        if (databaseExists) {
+          // Inform the user that the database already exists and continue.
+          void Window.showInformationMessage(
+            `Database for ${nwo} already exists at ${databasesStoragePath}. Not re-downloading.`,
+          );
+          //continue; // TODO: only continue for the database download, not the rest of the logic; use a conditional around the database download part
+        } else {
+          // ! Much of the below is copied from `downloadGitHubDatabase`
+          // ! in extensions/ql-vscode/src/databases/database-fetcher.ts
+          // ! Refactor and share code?
+          // Get the database URL for the repo.
+          const result = await convertGithubNwoToDatabaseUrl(
+            nwo,
+            octokit,
+            progress,
+            language,
+          );
+          if (!result) {
+            return;
+          }
+
+          const {
+            databaseUrl,
+            name,
+            owner,
+            databaseId,
+            databaseCreatedAt,
+            commitOid,
+          } = result;
+
+          // Do not use `commitOid`. Log a message explaining why.
+          void logger.log(
+            `Not using commit OID ${commitOid} since it may be newer than
+             the actual commit SHA ${actualCommitOid} used by the MRVA run.`,
+          );
+
+          const databaseFetcher = new DatabaseFetcher(
+            app,
+            dbm,
+            databasesStoragePath,
+            cliServer,
+          );
+
+          // Download the database for the repo.
+          await databaseFetcher.downloadGitHubDatabaseFromUrl(
+            databaseUrl,
+            databaseId,
+            databaseCreatedAt,
+            actualCommitOid,
+            owner,
+            name,
+            octokit,
+            progress,
+            makeSelected,
+            addSourceArchiveFolder,
+          );
         }
-
-        const {
-          databaseUrl,
-          name,
-          owner,
-          databaseId,
-          databaseCreatedAt,
-          commitOid,
-        } = result;
-
-        // Do not use `commitOid`. Log a message explaining why.
-        void logger.log(
-          `Not using commit OID ${commitOid} since it may be newer than
-           the actual commit SHA ${actualCommitOid} used by the MRVA run.`,
-        );
-
-        const databaseFetcher = new DatabaseFetcher(
-          app,
-          dbm,
-          databasesStoragePath,
-          cliServer,
-        );
-
-        // Download the database for the repo.
-        await databaseFetcher.downloadGitHubDatabaseFromUrl(
-          databaseUrl,
-          databaseId,
-          databaseCreatedAt,
-          actualCommitOid,
-          owner,
-          name,
-          octokit,
-          progress,
-          makeSelected,
-          addSourceArchiveFolder,
-        );
 
         // Find the database's `src.zip` archive and unzip it into a 'source-root` directory.
         // ! Need more error handling for src.zip that are very large?
