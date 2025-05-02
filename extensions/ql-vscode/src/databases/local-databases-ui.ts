@@ -54,6 +54,7 @@ import {
   tryGetQueryLanguage,
 } from "../common/query-language";
 import type { LanguageContextStore } from "../language-context-store";
+import { showBinaryChoiceDialog } from "../common/vscode/dialog";
 
 enum SortOrder {
   NameAsc = "NameAsc",
@@ -776,6 +777,20 @@ export class DatabaseUI extends DisposableObject {
   private async handleRemoveDatabase(
     databaseItems: DatabaseItem[],
   ): Promise<void> {
+    let databaseMessage: string = "";
+    if (databaseItems.length === 1) {
+      databaseMessage = `${databaseItems[0].name} database`;
+    } else {
+      databaseMessage = `${databaseItems.length} databases`;
+    }
+
+    const response = await showBinaryChoiceDialog(
+      `Removing ${databaseMessage}. Are you sure?`,
+    );
+    if (!response) {
+      return;
+    }
+
     return withProgress(
       async () => {
         await Promise.all(
