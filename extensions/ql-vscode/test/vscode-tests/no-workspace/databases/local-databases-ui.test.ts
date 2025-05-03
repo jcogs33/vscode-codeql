@@ -1,3 +1,4 @@
+import type { DirResult } from "tmp";
 import { dirSync, fileSync } from "tmp";
 import { dirname, join } from "path";
 import {
@@ -21,6 +22,8 @@ import { createMockApp } from "../../../__mocks__/appMock";
 import { QueryLanguage } from "../../../../src/common/query-language";
 import { mockedQuickPickItem, mockedObject } from "../../utils/mocking.helpers";
 import type { DatabaseFetcher } from "../../../../src/databases/database-fetcher";
+import * as dialog from "../../../../src/common/vscode/dialog";
+import { createMockDB } from "../../../factories/databases/databases";
 
 describe("local-databases-ui", () => {
   const storageDir = dirSync({ unsafeCleanup: true }).name;
@@ -272,6 +275,87 @@ describe("local-databases-ui", () => {
         expect(showQuickPickSpy).toHaveBeenCalledTimes(1);
         expect(handleChooseDatabaseGithubSpy).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  describe("handleRemoveDatabase", () => {
+    let showBinaryChoiceDialogSpy: jest.SpiedFunction<
+      typeof dialog.showBinaryChoiceDialog
+    >;
+    let mockDatabaseManager: any;
+    let mockLanguageContext: any;
+    let databaseUI: DatabaseUI;
+    let dir: DirResult;
+
+    beforeEach(() => {
+      // Choose 'Yes' when asked "Are you sure?"
+      showBinaryChoiceDialogSpy = jest
+        .spyOn(dialog, "showBinaryChoiceDialog")
+        .mockResolvedValue(true);
+
+      mockDatabaseManager = {
+        removeDatabaseItem: jest.fn(),
+        onDidChangeDatabaseItem: jest.fn(),
+        onDidChangeCurrentDatabaseItem: jest.fn(),
+      };
+
+      mockLanguageContext = {
+        onLanguageContextChanged: jest.fn(),
+      };
+
+      databaseUI = new DatabaseUI(
+        {} as any, // app
+        mockDatabaseManager,
+        {} as any, // databaseFetcher
+        mockLanguageContext,
+        {} as any, // queryRunner
+        storageDir,
+        storageDir,
+      );
+
+      dir = dirSync({
+        unsafeCleanup: true,
+      });
+    });
+
+    it("should remove single database after confirmation", async () => {
+      const mockDbItem = createMockDB(dir);
+      mockDbItem.name = "db-name";
+      await databaseUI["handleRemoveDatabase"]([mockDbItem]);
+
+      expect(showBinaryChoiceDialogSpy).toHaveBeenCalledWith(
+        "Removing db-name database. Are you sure?",
+      );
+      expect(mockDatabaseManager.removeDatabaseItem).toHaveBeenCalledWith(
+        mockDbItem,
+      );
+    });
+
+    it("should remove multiple databases after confirmation", async () => {
+      const mockDbItem1 = createMockDB(dir);
+      const mockDbItem2 = createMockDB(dir);
+      await databaseUI["handleRemoveDatabase"]([mockDbItem1, mockDbItem2]);
+
+      expect(showBinaryChoiceDialogSpy).toHaveBeenCalledWith(
+        "Removing 2 databases. Are you sure?",
+      );
+      expect(mockDatabaseManager.removeDatabaseItem).toHaveBeenCalledTimes(2);
+      expect(mockDatabaseManager.removeDatabaseItem).toHaveBeenCalledWith(
+        mockDbItem1,
+      );
+      expect(mockDatabaseManager.removeDatabaseItem).toHaveBeenCalledWith(
+        mockDbItem2,
+      );
+    });
+
+    it("should not remove databases if user cancels", async () => {
+      const mockDbItem = createMockDB(dir);
+      showBinaryChoiceDialogSpy.mockResolvedValueOnce(false);
+
+      await databaseUI["handleRemoveDatabase"]([mockDbItem]);
+
+      expect(showBinaryChoiceDialogSpy).toHaveBeenCalled();
+      expect(mockDatabaseManager.removeDatabaseItem).not.toHaveBeenCalled();
     });
   });
 
