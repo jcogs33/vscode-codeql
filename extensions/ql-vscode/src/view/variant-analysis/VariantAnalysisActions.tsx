@@ -1,6 +1,7 @@
 import { styled } from "styled-components";
 import { VSCodeButton } from "@vscode/webview-ui-toolkit/react";
 import { VariantAnalysisStatus } from "../../variant-analysis/shared/variant-analysis";
+// import { isCanary } from "../../config"; // TODO: resolve build error & re-add conditional render with isCanary on View Autofixes button (or on viewAutofixesDisabled)
 
 export type VariantAnalysisActionsProps = {
   variantAnalysisStatus: VariantAnalysisStatus;
