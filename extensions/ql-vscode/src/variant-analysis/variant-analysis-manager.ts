@@ -100,7 +100,6 @@ import { isSarifResultsQueryKind } from "../common/query-metadata";
 import { isVariantAnalysisEnabledForGitHubHost } from "./ghec-dr";
 import type { VariantAnalysisConfig } from "../config";
 import { getEnterpriseUri } from "../config";
-// import type { DatabaseManager } from "../databases/local-databases";
 
 const maxRetryCount = 3;
 
@@ -160,7 +159,6 @@ export class VariantAnalysisManager
     private readonly storagePath: string,
     private readonly variantAnalysisResultsManager: VariantAnalysisResultsManager,
     private readonly dbManager: DbManager,
-    // private readonly dbm: DatabaseManager, // ! not sure if it's okay to add this... (and looks weird with dbManager)
     private readonly config: VariantAnalysisConfig,
   ) {
     super();
@@ -983,7 +981,6 @@ export class VariantAnalysisManager
       this.app.logger,
       this.storagePath,
       this.app,
-      // this.dbm,
       this.cliServer,
     );
   }

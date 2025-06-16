@@ -887,7 +887,6 @@ async function activateWithInstalledDistribution(
     variantAnalysisStorageDir,
     variantAnalysisResultsManager,
     dbModule.dbManager,
-    // dbm,
     variantAnalysisConfig,
   );
   ctx.subscriptions.push(variantAnalysisManager);
