@@ -4,30 +4,43 @@ import {
   filterAndSortRepositoriesWithResults,
 } from "./shared/variant-analysis-filter-sort";
 import { readRepoTask } from "./repo-tasks-store";
-import { DatabaseFetcher } from "../databases/database-fetcher";
-import { convertGithubNwoToDatabaseUrl } from "../databases/github-databases/api";
-import { addDatabaseSourceToWorkspace } from "../config";
+// import { DatabaseFetcher } from "../databases/database-fetcher";
+// import { convertGithubNwoToDatabaseUrl } from "../databases/github-databases/api";
+// import { addDatabaseSourceToWorkspace } from "../config";
 import type {
   VariantAnalysis,
   VariantAnalysisRepositoryTask,
 } from "./shared/variant-analysis";
 import { window as Window } from "vscode";
-import { pathExists, ensureDir } from "fs-extra";
-import { join, basename, dirname } from "path";
+import {
+  pathExists,
+  ensureDir,
+  ensureDir as fse_ensureDir,
+  readdir,
+  move,
+  remove,
+} from "fs-extra";
+import { join, basename, dirname, parse, join as path_join } from "path";
 import type { Credentials } from "../common/authentication";
 import { withProgress, progressUpdate } from "../common/vscode/progress";
 import type { App } from "../common/app";
-import type { DatabaseManager } from "../databases/local-databases";
+// import type { DatabaseManager } from "../databases/local-databases";
 import type { CodeQLCliServer } from "../codeql-cli/cli";
 import type { NotificationLogger } from "../common/logging";
 import type { ProgressCallback } from "../common/vscode/progress";
-import { unzipToDirectoryConcurrently } from "../common/unzip-concurrently";
+// import { unzipToDirectoryConcurrently } from "../common/unzip-concurrently";
 import { glob } from "glob";
 import { tryGetQueryMetadata } from "../codeql-cli/query-metadata";
 import type { execFileSync } from "child_process";
 import { spawn } from "child_process";
 import { readFile, writeFile, unlink } from "fs/promises";
 import { tryOpenExternalFile } from "../common/vscode/external-files";
+import type { Octokit } from "@octokit/rest";
+
+// from Copilot:
+// ! test this!
+import { mkdtemp } from "fs/promises";
+import { tmpdir } from "os";
 
 // Limit to three repos when generating autofixes so not sending
 // too many requests to autofix. Since we only need to validate
@@ -64,69 +77,77 @@ export async function viewAutofixesForVariantAnalysisResults(
   logger: NotificationLogger,
   storagePath: string,
   app: App,
-  dbm: DatabaseManager,
+  // dbm: DatabaseManager,
   cliServer: CodeQLCliServer,
 ): Promise<void> {
   await withProgress(
     async (progress: ProgressCallback) => {
-      // ! Below 17-ish lines are mostly copied from `copyRepoListToClipboard`.
-      // ! Refactor and share code?
+      // Get the variant analysis with the given id.
       const variantAnalysis = variantAnalyses.get(variantAnalysisId);
       if (!variantAnalysis) {
         throw new Error(`No variant analysis with id: ${variantAnalysisId}`);
       }
 
-      // ***** Check for QHelp & metadata first and throw errors if not found.
-      // ***** No point in continuing if don't have the QHelp or query ID.
       // Get path to the query used by the variant analysis.
-      const queryPath = variantAnalysis.query.filePath;
-      const queryPathNoExt = queryPath.slice(0, -3);
-      // Get the path to the query help, which may be either a `.qhelp` or a `.md` file.
-      // ! Relies on query and qhelp file names matching.
-      const queryHelpPathQhelp = `${queryPathNoExt}.qhelp`;
-      const queryHelpPathMarkdown = `${queryPathNoExt}.md`;
-      let queryHelpPath: string;
+      const queryFilePath = variantAnalysis.query.filePath;
+      if (!(await pathExists(queryFilePath))) {
+        throw new Error(`Query file used by variant analysis not found.`);
+      }
+      // const queryFileBasename = basename(queryFilePath);
+      const queryFilePathNoExt = join(
+        dirname(queryFilePath),
+        parse(queryFilePath).name,
+      );
 
-      // Confirm which style of query help file exists.
-      if (await pathExists(queryHelpPathQhelp)) {
-        queryHelpPath = queryHelpPathQhelp;
-      } else if (await pathExists(queryHelpPathMarkdown)) {
-        queryHelpPath = queryHelpPathMarkdown;
+      // Get the path to the query help, which may be either a `.qhelp` or a `.md` file.
+      // Note: we assume that the basename of the query file is the same as the basename of the query help file.
+      const queryHelpFilePathQhelp = `${queryFilePathNoExt}.qhelp`;
+      const queryHelpFilePathMarkdown = `${queryFilePathNoExt}.md`;
+      let queryHelpFilePath: string;
+      // Set `queryHelpFilePath` to the existing extension type.
+      if (await pathExists(queryHelpFilePathQhelp)) {
+        queryHelpFilePath = queryHelpFilePathQhelp;
+      } else if (await pathExists(queryHelpFilePathMarkdown)) {
+        queryHelpFilePath = queryHelpFilePathMarkdown;
       } else {
         throw new Error(
-          `Could not find query help file at either ${queryHelpPathQhelp} or ${queryHelpPathMarkdown}.`,
+          `Could not find query help file at either ${queryHelpFilePathQhelp} or ${queryHelpFilePathMarkdown}. Check that the query help file exists and is named correctly.`,
         );
       }
 
-      // Read the query metadata if possible.
-      const metadata = await tryGetQueryMetadata(cliServer, queryPath);
+      // Get the query metadata.
+      const metadata = await tryGetQueryMetadata(cliServer, queryFilePath);
       if (!metadata) {
-        throw new Error(`Could not get query metadata for ${queryPath}.`);
+        throw new Error(`Could not get query metadata for ${queryFilePath}.`);
       }
-      if (!metadata.id) {
-        throw new Error(`Query metadata for ${queryPath} is missing an ID.`);
-      }
-      // Get the query ID for the overridden query help's filename.
+      // Get the query ID (used for the overridden query help's filename).
       const queryId = metadata.id;
-      // Replace `/` with `-` to get the query ID with a dash.
-      // `replaceAll` since some query IDs have multiple slashes.
+      if (!queryId) {
+        throw new Error(
+          `Query metadata for ${queryFilePath} is missing an ID.`,
+        );
+      }
+      // Replace `/` with `-` for use with the overridden query help's filename.
+      // Use `replaceAll` since some query IDs have multiple slashes.
       const queryIdWithDash = queryId.replaceAll("/", "-");
 
-      // Get the path to the local autofix installation.
-      // TODO: unhardcode once figure out how to check for local autofix installation
-      // TODO: maybe check how DCA with local autofix handles that.
+      // ! Get the path to the local autofix installation.
+      // ! TODO: unhardcode once figure out how to check for local autofix installation
+      // ! TODO: maybe check how DCA with local autofix handles that.
       const localAutofixPath = `/Users/jcogs33/Documents/codeml-autofix/cocofix`;
 
       // Get the path to the output directory for overriding the query help.
       const queryHelpOverrideDirectory = `${localAutofixPath}/prompt-templates/qhelps/${queryIdWithDash}.md`;
 
-      // Generate the query help and output to the override directory.
+      // Generate the query help and output it to the override directory.
       await cliServer.generateQueryHelp(
-        queryHelpPath,
+        queryHelpFilePath,
         queryHelpOverrideDirectory,
       );
 
       // ***** Continue with downloading databases, extracting source root paths, and finding SARIF paths.
+      // ! Below 13-ish lines are mostly copied from `copyRepoListToClipboard`.
+      // ! Refactor and share code?
       const filteredRepositories = filterAndSortRepositoriesWithResults(
         variantAnalysis.scannedRepos,
         filterSort,
@@ -140,7 +161,7 @@ export async function viewAutofixesForVariantAnalysisResults(
         return;
       }
       // Get the language used by the variant analysis.
-      const language = variantAnalysis.language;
+      // const language = variantAnalysis.language;
 
       // Limit to MAX_NUM_REPOS by slicing the array,
       // and inform the user about the limit.
@@ -153,8 +174,10 @@ export async function viewAutofixesForVariantAnalysisResults(
 
       // Find path to the variant analysis information.
       const variantAnalysisStoragePath = `${storagePath}/${variantAnalysisId}`;
-      // Create directory path for storing the downloaded databases.
-      const databasesStoragePath = `${variantAnalysisStoragePath}/autofix/databases`;
+      // // Create directory path for storing the downloaded databases.
+      // const databasesStoragePath = `${variantAnalysisStoragePath}/autofix/databases`;
+      // Create directory path for storing the source roots.
+      const sourceRootsStoragePath = `${variantAnalysisStoragePath}/autofix/source-roots`;
       // Create directory path for all autofix results.
       let autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
       // if the path already exists, assume that it's a previous run and append "-n" to the end of the path
@@ -167,16 +190,16 @@ export async function viewAutofixesForVariantAnalysisResults(
         autofixOutputStoragePath = autofixOutputStoragePath += i.toString();
       }
 
-      // ! For now, do not make the downloaded database selected
-      // ! in the database panel. Consider changing this in the
-      // ! future or not adding to the database panel at all.
-      // ! If keep in panel, consider adding a "mrva" {pre/suf}fix
-      // ! to the database name to make it clear where it came from
-      // ! and where it's stored.
-      const makeSelected = false;
-      // TODO: confirm that I want to call `addDatabaseSourceToWorkspace`
-      // versus always setting to a value.
-      const addSourceArchiveFolder = addDatabaseSourceToWorkspace();
+      // // ! For now, do not make the downloaded database selected
+      // // ! in the database panel. Consider changing this in the
+      // // ! future or not adding to the database panel at all.
+      // // ! If keep in panel, consider adding a "mrva" {pre/suf}fix
+      // // ! to the database name to make it clear where it came from
+      // // ! and where it's stored.
+      // const makeSelected = false;
+      // // TODO: confirm that I want to call `addDatabaseSourceToWorkspace`
+      // // versus always setting to a value.
+      // const addSourceArchiveFolder = addDatabaseSourceToWorkspace();
 
       // Initialize an array to store the source root paths.
       const sourceRootPaths: string[] = [];
@@ -223,90 +246,98 @@ export async function viewAutofixesForVariantAnalysisResults(
         // Do a simple check based on just the folder name,
         // which should be of the form <owner>-<repo>. Caveat:
         // this check could break if the folder name generation changes.
-        const repoDatabaseStoragePath = `${databasesStoragePath}/${nwoWithDash}`;
-        const databaseExists: boolean = await pathExists(
-          repoDatabaseStoragePath,
-        );
-        if (databaseExists) {
-          // Inform the user that the database already exists and continue.
-          void Window.showInformationMessage(
-            `Database for ${nwo} already exists at ${databasesStoragePath}. Not re-downloading.`,
-          );
-          //continue; // TODO: only continue for the database download, not the rest of the logic; use a conditional around the database download part
-        } else {
-          // ! Much of the below is copied from `downloadGitHubDatabase`
-          // ! in extensions/ql-vscode/src/databases/database-fetcher.ts
-          // ! Refactor and share code?
-          // Get the database URL for the repo.
-          const result = await convertGithubNwoToDatabaseUrl(
-            nwo,
-            octokit,
-            progress,
-            language,
-          );
-          if (!result) {
-            return;
-          }
+        // const repoDatabaseStoragePath = `${databasesStoragePath}/${nwoWithDash}`;
+        // const databaseExists: boolean = await pathExists(
+        //   repoDatabaseStoragePath,
+        // );
+        // if (databaseExists) {
+        //   // Inform the user that the database already exists and continue.
+        //   void Window.showInformationMessage(
+        //     `Database for ${nwo} already exists at ${databasesStoragePath}. Not re-downloading.`,
+        //   );
+        //   //continue; // TODO: only continue for the database download, not the rest of the logic; use a conditional around the database download part
+        // } else {
+        //   // ! Much of the below is copied from `downloadGitHubDatabase`
+        //   // ! in extensions/ql-vscode/src/databases/database-fetcher.ts
+        //   // ! Refactor and share code?
+        //   // Get the database URL for the repo.
+        //   const result = await convertGithubNwoToDatabaseUrl(
+        //     nwo,
+        //     octokit,
+        //     progress,
+        //     language,
+        //   );
+        //   if (!result) {
+        //     return;
+        //   }
 
-          const {
-            databaseUrl,
-            name,
-            owner,
-            databaseId,
-            databaseCreatedAt,
-            commitOid,
-          } = result;
+        //   const {
+        //     databaseUrl,
+        //     name,
+        //     owner,
+        //     databaseId,
+        //     databaseCreatedAt,
+        //     commitOid,
+        //   } = result;
 
-          // Do not use `commitOid`. Log a message explaining why.
-          void logger.log(
-            `Not using commit OID ${commitOid} since it may be newer than
-             the actual commit SHA ${actualCommitOid} used by the MRVA run.`,
-          );
+        //   // Do not use `commitOid`. Log a message explaining why.
+        //   void logger.log(
+        //     `Not using commit OID ${commitOid} since it may be newer than
+        //      the actual commit SHA ${actualCommitOid} used by the MRVA run.`,
+        //   );
 
-          const databaseFetcher = new DatabaseFetcher(
-            app,
-            dbm,
-            databasesStoragePath,
-            cliServer,
-          );
+        //   const databaseFetcher = new DatabaseFetcher(
+        //     app,
+        //     dbm,
+        //     databasesStoragePath,
+        //     cliServer,
+        //   );
 
-          // Download the database for the repo.
-          await databaseFetcher.downloadGitHubDatabaseFromUrl(
-            databaseUrl,
-            databaseId,
-            databaseCreatedAt,
-            actualCommitOid,
-            owner,
-            name,
-            octokit,
-            progress,
-            makeSelected,
-            addSourceArchiveFolder,
-          );
-        }
+        //   // Download the database for the repo.
+        //   await databaseFetcher.downloadGitHubDatabaseFromUrl(
+        //     databaseUrl,
+        //     databaseId,
+        //     databaseCreatedAt,
+        //     actualCommitOid,
+        //     owner,
+        //     name,
+        //     octokit,
+        //     progress,
+        //     makeSelected,
+        //     addSourceArchiveFolder,
+        //   );
+        // }
 
-        // Find the database's `src.zip` archive and unzip it into a 'source-root` directory.
-        // ! Need more error handling for src.zip that are very large?
-        // ! Should have try/catch here?
-        // ! Should not stop overall function execution by throwing an error?
-        const unzippedFilesDirectory = `${repoDatabaseStoragePath}/source-root`;
-        const zipFiles = await glob(`${repoDatabaseStoragePath}/**/src.zip`);
-        if (zipFiles.length === 1) {
-          await unzipToDirectoryConcurrently(
-            zipFiles[0],
-            unzippedFilesDirectory,
-          );
-        } else {
-          throw new Error(
-            `Expected to find exactly one \`src.zip\` archive, but found ${zipFiles.length}.`,
-          );
-        }
+        // // Find the database's `src.zip` archive and unzip it into a 'source-root` directory.
+        // // ! Need more error handling for src.zip that are very large?
+        // // ! Should have try/catch here?
+        // // ! Should not stop overall function execution by throwing an error?
+        // const unzippedFilesDirectory = `${repoDatabaseStoragePath}/source-root`;
+        // const zipFiles = await glob(`${repoDatabaseStoragePath}/**/src.zip`);
+        // if (zipFiles.length === 1) {
+        //   await unzipToDirectoryConcurrently(
+        //     zipFiles[0],
+        //     unzippedFilesDirectory,
+        //   );
+        // } else {
+        //   throw new Error(
+        //     `Expected to find exactly one \`src.zip\` archive, but found ${zipFiles.length}.`,
+        //   );
+        // }
 
-        // Get the source root path using `unzippedFilesDirectory` and `sourceLocationPrefix`.
-        const sourceLocationPrefix = repoTask.sourceLocationPrefix;
-        const srcRootPath = `${unzippedFilesDirectory}${sourceLocationPrefix}`;
+        // // Get the source root path using `unzippedFilesDirectory` and `sourceLocationPrefix`.
+        // const sourceLocationPrefix = repoTask.sourceLocationPrefix;
+        // const srcRootPath = `${unzippedFilesDirectory}${sourceLocationPrefix}`;
 
         // Store the source root path in an array to use with autofix.
+        // sourceRootPaths.push(srcRootPath);
+        const srcRootPath = await downloadPublicCommitSource(
+          nwo,
+          actualCommitOid,
+          sourceRootsStoragePath,
+          octokit,
+          logger,
+        );
         sourceRootPaths.push(srcRootPath);
 
         // TODO: Move this before database downloading. Should error out if can't find sarif file.
@@ -610,3 +641,181 @@ async function mergeFiles(
     throw error;
   }
 }
+
+export async function downloadPublicCommitSource(
+  nwo: string,
+  sha: string,
+  outputPath: string,
+  octokit: Octokit,
+  logger: NotificationLogger,
+): Promise<string> {
+  const [owner, repo] = nwo.split("/");
+  if (!owner || !repo) {
+    throw new Error(`Invalid repository name: ${nwo}`);
+  }
+
+  // Create output directory if it doesn't exist
+  await fse_ensureDir(outputPath);
+
+  // Define the final checkout directory
+  const checkoutDir = path_join(
+    outputPath,
+    `${owner}-${repo}-${sha.substring(0, 7)}`,
+  );
+
+  // Check if directory already exists to avoid re-downloading
+  if (await pathExists(checkoutDir)) {
+    void logger.log(
+      `Source for ${nwo} at ${sha} already exists at ${checkoutDir}.`,
+    );
+    return checkoutDir;
+  }
+
+  void logger.log(`Fetching source of repository ${nwo} at ${sha}...`);
+
+  try {
+    // Create a temporary directory for downloading
+    const downloadDir = await mkdtemp(path_join(tmpdir(), "download-source-"));
+    const tarballPath = path_join(downloadDir, "source.tar.gz");
+
+    // Get the tarball URL
+    const { url } = await octokit.rest.repos.downloadTarballArchive({
+      owner,
+      repo,
+      ref: sha,
+    });
+
+    // Download the tarball using spawn for better security than shell commands
+    await new Promise<void>((resolve, reject) => {
+      const curlArgs = [
+        "-H",
+        "Accept: application/octet-stream",
+        "--user-agent",
+        "GitHub-CodeQL-Extension",
+        "-L", // Follow redirects
+        "-o",
+        tarballPath,
+        url,
+      ];
+
+      const process = spawn("curl", curlArgs, { cwd: downloadDir });
+
+      process.on("error", reject);
+      process.on("exit", (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`curl exited with code ${code}`)),
+      );
+    });
+
+    void logger.log(`Download complete, extracting source...`);
+
+    // Extract the tarball
+    await new Promise<void>((resolve, reject) => {
+      const process = spawn("tar", ["-xzf", tarballPath], { cwd: downloadDir });
+
+      process.on("error", reject);
+      process.on("exit", (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`tar extraction failed with code ${code}`)),
+      );
+    });
+
+    // Remove the tarball to save space
+    await unlink(tarballPath);
+
+    // Find the extracted directory (GitHub tarballs extract to a single directory)
+    const extractedFiles = await readdir(downloadDir);
+    const sourceDir = extractedFiles.filter((f) => f !== "source.tar.gz")[0];
+
+    if (!sourceDir) {
+      throw new Error("Failed to find extracted source directory");
+    }
+
+    const extractedSourcePath = path_join(downloadDir, sourceDir);
+
+    // Ensure the destination directory's parent exists
+    await fse_ensureDir(dirname(checkoutDir));
+
+    // Move the extracted source to the final location
+    await move(extractedSourcePath, checkoutDir);
+
+    // Clean up the temporary directory
+    await remove(downloadDir);
+
+    return checkoutDir;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to download ${nwo} at ${sha}: ${errorMessage}`);
+  }
+}
+
+// ! adapted from DCA:
+// ! https://github.com/github/codeql-dca/blob/e53cf41d52df20662291ecd99b39d018b2cdf917/packages/utils/src/githubAPI.ts#L2213
+// export async function downloadPublicCommitSource(
+//   commit: {
+//     repository: string;
+//     sha: string;
+//   },
+//   update: boolean,
+//   config: { "work-dir": string },
+//   client: Octokit,
+//   logger: NotificationLogger,
+// ): Promise<string> {
+//   const checkoutDir = files.resolve.workDir.repositoryCheckout(
+//     config,
+//     commit.repository,
+//     commit.sha,
+//   );
+//   if (skipRedownload("source", checkoutDir, update, config)) {
+//     return checkoutDir;
+//   }
+//   void logger.log(
+//     `Fetching source of repository ${commit.repository} at ${commit.sha}...`,
+//   );
+
+//   const tarballUrl = await client.rest.repos.downloadTarballArchive({
+//     ...commit.repository,
+//     ref: commit.sha,
+//   });
+//   dcaLogger.debug(() => `Got tarball URL: ${tarballUrl.url}`);
+//   const downloadDir = util.mkdtempSync("download-source-");
+//   const tarball = path.join(downloadDir, `source.tar.gz`);
+//   await util.execFollow(
+//     "curl",
+//     [
+//       "-H",
+//       "Accept: application/octet-stream",
+//       "--user-agent",
+//       "curl/github/codeql-dca (downloadPublicCommitSource)",
+//       "-L",
+//       "-o",
+//       tarball,
+//       tarballUrl.url,
+//     ],
+//     {
+//       cwd: downloadDir,
+//     },
+//   );
+//   dcaLogger.info(
+//     () =>
+//       `Downloaded source to ${tarball} (size: ${util.getSizeInBytes(tarball)} bytes)`,
+//   );
+//   await util.execFollow("tar", ["-xzf", tarball], {
+//     cwd: downloadDir,
+//   });
+//   fs.unlinkSync(tarball);
+//   const actualSourceDir = path.join(
+//     downloadDir,
+//     fs.readdirSync(downloadDir)[0],
+//   );
+//   dcaLogger.info(
+//     () =>
+//       `Extracted source to ${actualSourceDir} (size: ${util.getSizeInBytes(actualSourceDir)} bytes)`,
+//   );
+//   util.ensureDirExists(path.dirname(checkoutDir));
+//   fse.moveSync(actualSourceDir, checkoutDir);
+
+//   return checkoutDir;
+// }
