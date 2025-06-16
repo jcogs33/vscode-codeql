@@ -49,7 +49,6 @@ const MAX_NUM_FIXES: number = 3;
 // ! - Parallelize anything that can be parallelized. e.g. Source root archive downloading, etc.
 
 // ! For PR, if go that direction:
-// ! - Local environment handling (e.g. checking for local autofix installation, etc. (see DCA))
 // ! - Canary with error for non-internal users.
 // ! - More error handling.
 // ! - Testing.
@@ -120,10 +119,21 @@ export async function viewAutofixesForVariantAnalysisResults(
       // Use `replaceAll` since some query IDs have multiple slashes.
       const queryIdWithDash = queryId.replaceAll("/", "-");
 
-      // ! Get the path to the local autofix installation.
-      // ! TODO: unhardcode once figure out how to check for local autofix installation
-      // ! TODO: maybe check how DCA with local autofix handles that.
-      const localAutofixPath = `/Users/jcogs33/Documents/codeml-autofix/cocofix`;
+      // Get the path to the local autofix installation.
+      // TODO: document the need for this environment variable.
+      // TODO: maybe configure differently instead (config file, user setting, etc.)
+      const localAutofixPath = process.env.AUTOFIX_PATH;
+      if (!localAutofixPath) {
+        throw new Error(
+          "Environment variable AUTOFIX_PATH is not set. Please set it to the path of the local autofix installation.",
+        );
+      }
+      // Check if the local autofix path exists.
+      if (!(await pathExists(localAutofixPath))) {
+        throw new Error(
+          `Local autofix path ${localAutofixPath} does not exist. Please check that the path stored in environment variable AUTOFIX_PATH is correct.`,
+        );
+      }
 
       // Get the path to the output directory for overriding the query help.
       const queryHelpOverrideDirectory = `${localAutofixPath}/prompt-templates/qhelps/${queryIdWithDash}.md`;
