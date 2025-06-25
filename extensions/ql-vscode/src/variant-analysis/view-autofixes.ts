@@ -76,68 +76,13 @@ export async function viewAutofixesForVariantAnalysisResults(
         throw new Error(`No variant analysis with id: ${variantAnalysisId}`);
       }
 
-      // Get path to the query used by the variant analysis.
-      const queryFilePath = variantAnalysis.query.filePath;
-      if (!(await pathExists(queryFilePath))) {
-        throw new Error(`Query file used by variant analysis not found.`);
-      }
-      // const queryFileBasename = basename(queryFilePath);
-      const queryFilePathNoExt = join(
-        dirname(queryFilePath),
-        parse(queryFilePath).name,
-      );
-
-      // Get the path to the query help, which may be either a `.qhelp` or a `.md` file.
-      // Note: we assume that the name of the query file is the same as the name of the query help file.
-      const queryHelpFilePathQhelp = `${queryFilePathNoExt}.qhelp`;
-      const queryHelpFilePathMarkdown = `${queryFilePathNoExt}.md`;
-      let queryHelpFilePath: string;
-      // Set `queryHelpFilePath` to the existing extension type.
-      if (await pathExists(queryHelpFilePathQhelp)) {
-        queryHelpFilePath = queryHelpFilePathQhelp;
-      } else if (await pathExists(queryHelpFilePathMarkdown)) {
-        queryHelpFilePath = queryHelpFilePathMarkdown;
-      } else {
-        throw new Error(
-          `Could not find query help file at either ${queryHelpFilePathQhelp} or ${queryHelpFilePathMarkdown}. Check that the query help file exists and is named correctly.`,
-        );
-      }
-
-      // Get the query metadata.
-      const metadata = await tryGetQueryMetadata(cliServer, queryFilePath);
-      if (!metadata) {
-        throw new Error(`Could not get query metadata for ${queryFilePath}.`);
-      }
-      // Get the query ID (used for the overridden query help's filename).
-      const queryId = metadata.id;
-      if (!queryId) {
-        throw new Error(
-          `Query metadata for ${queryFilePath} is missing an ID.`,
-        );
-      }
-      // Replace `/` with `-` for use with the overridden query help's filename.
-      // Use `replaceAll` since some query IDs have multiple slashes.
-      const queryIdWithDash = queryId.replaceAll("/", "-");
-
       // Get the path to the local autofix installation.
       progress(progressUpdate(1, 4, `checking for local autofix installation`));
       const localAutofixPath = findLocalAutofix();
 
-      // Get the path to the output directory for overriding the query help.
-      const queryHelpOverrideDirectory = `${localAutofixPath}/prompt-templates/qhelps/${queryIdWithDash}.md`;
-
       // Generate the query help and output it to the override directory.
-      progress(
-        progressUpdate(
-          2,
-          4,
-          `generating query help override at ${queryHelpOverrideDirectory}`,
-        ),
-      );
-      await cliServer.generateQueryHelp(
-        queryHelpFilePath,
-        queryHelpOverrideDirectory,
-      );
+      progress(progressUpdate(2, 4, `generating query help override`));
+      await overrideQueryHelp(variantAnalysis, cliServer, localAutofixPath);
 
       // ! Below 13-ish lines are mostly copied from `copyRepoListToClipboard`.
       // ! Refactor and share code?
@@ -500,6 +445,67 @@ function findLocalAutofix(): string {
     throw new Error(`Local autofix path ${localAutofixPath} does not exist.`);
   }
   return localAutofixPath;
+}
+
+/**
+ * Overrides the query help for a given variant analysis.
+ * @param variantAnalysis The variant analysis to override the query help for.
+ * @param cliServer The CodeQL CLI server to use for generating the query help.
+ * @param localAutofixPath The local path to the autofix installation.
+ */
+async function overrideQueryHelp(
+  variantAnalysis: VariantAnalysis,
+  cliServer: CodeQLCliServer,
+  localAutofixPath: string,
+): Promise<void> {
+  // Get path to the query used by the variant analysis.
+  const queryFilePath = variantAnalysis.query.filePath;
+  if (!(await pathExists(queryFilePath))) {
+    throw new Error(`Query file used by variant analysis not found.`);
+  }
+  const queryFilePathNoExt = join(
+    dirname(queryFilePath),
+    parse(queryFilePath).name,
+  );
+
+  // Get the path to the query help, which may be either a `.qhelp` or a `.md` file.
+  // Note: we assume that the name of the query file is the same as the name of the query help file.
+  const queryHelpFilePathQhelp = `${queryFilePathNoExt}.qhelp`;
+  const queryHelpFilePathMarkdown = `${queryFilePathNoExt}.md`;
+
+  // Set `queryHelpFilePath` to the existing extension type.
+  let queryHelpFilePath: string;
+  if (await pathExists(queryHelpFilePathQhelp)) {
+    queryHelpFilePath = queryHelpFilePathQhelp;
+  } else if (await pathExists(queryHelpFilePathMarkdown)) {
+    queryHelpFilePath = queryHelpFilePathMarkdown;
+  } else {
+    throw new Error(
+      `Could not find query help file at either ${queryHelpFilePathQhelp} or ${queryHelpFilePathMarkdown}. Check that the query help file exists and is named correctly.`,
+    );
+  }
+
+  // Get the query metadata.
+  const metadata = await tryGetQueryMetadata(cliServer, queryFilePath);
+  if (!metadata) {
+    throw new Error(`Could not get query metadata for ${queryFilePath}.`);
+  }
+  // Get the query ID (used for the overridden query help's filename).
+  const queryId = metadata.id;
+  if (!queryId) {
+    throw new Error(`Query metadata for ${queryFilePath} is missing an ID.`);
+  }
+  // Replace `/` with `-` for use with the overridden query help's filename.
+  // Use `replaceAll` since some query IDs have multiple slashes.
+  const queryIdWithDash = queryId.replaceAll("/", "-");
+
+  // Get the path to the output directory for overriding the query help.
+  const queryHelpOverrideDirectory = `${localAutofixPath}/prompt-templates/qhelps/${queryIdWithDash}.md`;
+
+  await cliServer.generateQueryHelp(
+    queryHelpFilePath,
+    queryHelpOverrideDirectory,
+  );
 }
 
 // TODO: rewrite this?
