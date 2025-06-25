@@ -84,30 +84,11 @@ export async function viewAutofixesForVariantAnalysisResults(
       progress(progressUpdate(2, 4, `generating query help override`));
       await overrideQueryHelp(variantAnalysis, cliServer, localAutofixPath);
 
-      // ! Below 13-ish lines are mostly copied from `copyRepoListToClipboard`.
-      // ! Refactor and share code?
-      // Get the repositories that were selected by the user.
-      const filteredRepositories = filterAndSortRepositoriesWithResults(
-        variantAnalysis.scannedRepos,
+      // Get the full names (nwos) of the selected repositories.
+      const selectedRepoNames = getSelectedRepositoryNames(
+        variantAnalysis,
         filterSort,
       );
-
-      // Get the full names (owner/repo = nwo) of the selected repos.
-      let fullNames = filteredRepositories
-        ?.filter((a) => a.resultCount && a.resultCount > 0)
-        .map((a) => a.repository.fullName);
-      if (!fullNames || fullNames.length === 0) {
-        return;
-      }
-
-      // Limit to MAX_NUM_REPOS by slicing the array,
-      // and inform the user about the limit.
-      if (fullNames.length > MAX_NUM_REPOS) {
-        fullNames = fullNames.slice(0, MAX_NUM_REPOS);
-        void Window.showInformationMessage(
-          `Only the first ${MAX_NUM_REPOS} repos will be included in the Autofix results.`,
-        );
-      }
 
       // Find path to the variant analysis information.
       const variantAnalysisStoragePath = `${storagePath}/${variantAnalysisId}`;
@@ -135,10 +116,14 @@ export async function viewAutofixesForVariantAnalysisResults(
       const octokit = await credentials.getOctokit();
 
       progress(
-        progressUpdate(3, 4, `processing ${fullNames.length} repositories`),
+        progressUpdate(
+          3,
+          4,
+          `processing ${selectedRepoNames.length} repositories`,
+        ),
       );
       await Promise.all(
-        fullNames.map(async (nwo) =>
+        selectedRepoNames.map(async (nwo) =>
           withProgress(
             async (progressInner: ProgressCallback) => {
               // Read the contents of the variant analysis' `repo_task.json` file.
@@ -506,6 +491,45 @@ async function overrideQueryHelp(
     queryHelpFilePath,
     queryHelpOverrideDirectory,
   );
+}
+
+/**
+ * Gets the full names (owner/repo) of the selected repositories from the given variant analysis.
+ * Throws an error if no repositories with results are found.
+ * @param variantAnalysis The variant analysis to get the repositories from.
+ * @param filterSort The filter and sort state to use for filtering the repositories.
+ * @returns An array of full names (owner/repo) of the selected repositories.
+ * @throws Error if no repositories with results are found.
+ */
+function getSelectedRepositoryNames(
+  variantAnalysis: VariantAnalysis,
+  filterSort: RepositoriesFilterSortStateWithIds,
+): string[] {
+  // TODO: consider sharing first two parts with `copyRepoListToClipboard`.
+  // Get the repositories that were selected by the user.
+  const filteredRepositories = filterAndSortRepositoriesWithResults(
+    variantAnalysis.scannedRepos,
+    filterSort,
+  );
+
+  // Get the full names (owner/repo = nwo) of the selected repos.
+  let fullNames = filteredRepositories
+    ?.filter((a) => a.resultCount && a.resultCount > 0)
+    .map((a) => a.repository.fullName);
+  if (!fullNames || fullNames.length === 0) {
+    throw new Error("No repositories with results found.");
+  }
+
+  // Limit to MAX_NUM_REPOS by slicing the array,
+  // and inform the user about the limit.
+  if (fullNames.length > MAX_NUM_REPOS) {
+    fullNames = fullNames.slice(0, MAX_NUM_REPOS);
+    void Window.showInformationMessage(
+      `Only the first ${MAX_NUM_REPOS} repos will be included in the Autofix results.`,
+    );
+  }
+
+  return fullNames;
 }
 
 // TODO: rewrite this?
