@@ -120,21 +120,8 @@ export async function viewAutofixesForVariantAnalysisResults(
       const queryIdWithDash = queryId.replaceAll("/", "-");
 
       // Get the path to the local autofix installation.
-      // TODO: document the need for this environment variable.
-      // TODO: maybe configure differently instead (config file, user setting, etc.)
       progress(progressUpdate(1, 4, `checking for local autofix installation`));
-      const localAutofixPath = process.env.AUTOFIX_PATH;
-      if (!localAutofixPath) {
-        throw new Error(
-          "Environment variable AUTOFIX_PATH is not set. Please set it to the path of the local autofix installation.",
-        );
-      }
-      // Check if the local autofix path exists.
-      if (!(await pathExists(localAutofixPath))) {
-        throw new Error(
-          `Local autofix path ${localAutofixPath} does not exist. Please check that the path stored in environment variable AUTOFIX_PATH is correct.`,
-        );
-      }
+      const localAutofixPath = findLocalAutofix();
 
       // Get the path to the output directory for overriding the query help.
       const queryHelpOverrideDirectory = `${localAutofixPath}/prompt-templates/qhelps/${queryIdWithDash}.md`;
@@ -493,6 +480,26 @@ export async function viewAutofixesForVariantAnalysisResults(
       cancellable: false,
     },
   );
+}
+
+/**
+ * Finds the local autofix installation path from the AUTOFIX_PATH environment variable.
+ * Throws an error if the path is not set or does not exist.
+ * @returns An object containing the local autofix path.
+ * @throws Error if the AUTOFIX_PATH environment variable is not set or the path does not exist.
+ */
+function findLocalAutofix(): string {
+  // TODO: consider use PATH env var instead of separate AUTOFIX_PATH var.
+  // TODO: maybe configure differently instead (config file, user setting, etc.)
+  // TODO: document the need for this environment variable.
+  const localAutofixPath = process.env.AUTOFIX_PATH;
+  if (!localAutofixPath) {
+    throw new Error("Path to local autofix installation not found.");
+  }
+  if (!pathExists(localAutofixPath)) {
+    throw new Error(`Local autofix path ${localAutofixPath} does not exist.`);
+  }
+  return localAutofixPath;
 }
 
 // TODO: rewrite this?
