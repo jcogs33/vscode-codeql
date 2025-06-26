@@ -99,6 +99,10 @@ export async function viewAutofixesForVariantAnalysisResults(
       // Initialize an array to store the output files for all repositories.
       const outputTextFiles: string[] = [];
 
+      // Process the selected repositories:
+      // (1) Get sarif
+      // (2) Download source root
+      // (3) Run autofix
       progress(
         progressUpdate(
           3,
@@ -106,262 +110,16 @@ export async function viewAutofixesForVariantAnalysisResults(
           `processing ${selectedRepoNames.length} repositories`,
         ),
       );
-      await Promise.all(
-        selectedRepoNames.map(async (nwo) =>
-          withProgress(
-            async (progressInner: ProgressCallback) => {
-              // Read the contents of the variant analysis' `repo_task.json` file.
-              const repoStoragePath = join(variantAnalysisIdStoragePath, nwo);
-              const repoTask: VariantAnalysisRepositoryTask =
-                await readRepoTask(repoStoragePath);
-              // Check if the `databaseCommitSha` exists in the file contents.
-              // We need this check to allow the `null` type below, else
-              // TypeScript wants `undefined`.
-              // ! Confirm if should throw an error like this here.
-              if (!repoTask.databaseCommitSha) {
-                throw new Error(`Missing database commit SHA for ${nwo}`);
-              }
-              if (!repoTask.resultCount) {
-                throw new Error(
-                  `Missing variant analysis result count for ${nwo}`,
-                );
-              }
-              // Get the `databaseCommitSha` used by the variant analysis.
-              // We need this SHA to ensure we download the correct database
-              // version for use with the variant analysis' SARIF. Otherwise,
-              // we will download the latest database version, which may not
-              // be compatible with the SARIF.
-              const actualCommitOid: string | null = repoTask.databaseCommitSha;
-              const repoResultCount = repoTask.resultCount;
-
-              const nwoWithDash = nwo.replace("/", "-");
-
-              // Download the source root for the repo.
-              progressInner(progressUpdate(1, 3, `downloading source root`));
-              const srcRootPath = await downloadPublicCommitSource(
-                nwo,
-                actualCommitOid,
-                sourceRootsStoragePath,
-                credentials,
-                logger,
-              );
-
-              // TODO: Move this before database downloading. Should error out if can't find sarif file.
-              // Get results directory path.
-              const repoResultsStoragePath = join(repoStoragePath, "results");
-              // Find sarif file.
-              progressInner(progressUpdate(2, 3, `getting sarif`));
-              const sarifFiles = await glob(
-                `${repoResultsStoragePath}/**/*.sarif`,
-              );
-              if (sarifFiles.length !== 1) {
-                throw new Error(
-                  `Expected to find exactly one \`*.sarif\` file for ${nwo}, but found ${sarifFiles.length}.`,
-                );
-              }
-
-              // Create output directories for repo's autofix results.
-              const repoAutofixOutputStoragePath = `${autofixOutputStoragePath}/${nwoWithDash}`;
-              await ensureDir(repoAutofixOutputStoragePath);
-              // TODO: remove the need for these separated extensions when refactor.
-              const txtFileExtension = ".txt";
-              const mdFileExtension = ".md";
-              const sarifFileExtension = ".sarif";
-              const outputTextFile = join(
-                repoAutofixOutputStoragePath,
-                "output",
-              );
-              const transcriptFile = join(
-                repoAutofixOutputStoragePath,
-                "transcript",
-              );
-              const fixDescriptionFile = join(
-                repoAutofixOutputStoragePath,
-                "fix-description",
-              );
-              const sarifOutputFile = join(
-                repoAutofixOutputStoragePath,
-                "output",
-              );
-
-              // ***** Run autofix on the selected repo.
-              progressInner(progressUpdate(3, 3, `running autofix`));
-
-              // ./bin/cocofix.js --model capi-dev-4o --dev \
-              // --sarif <sarifFiles[0]> \
-              // --source-root <srcRootPath> \
-              // --format=text --output <output.txt> --diff-style diff \ // ! or do text instead of diff if want line of "=" between fixes
-              // --transcript <output-dir>/transcript.md \
-              // --fix-description <output-dir>/fix-description.md \
-              // --sarif-output <output-dir>/output.sarif
-
-              const cocofixBin = `${localAutofixPath}/bin/cocofix.js`; // TODO: unhardcode later; maybe require config like DCA?
-
-              // Limit number of fixes generated.
-              const limitFixesBoolean: boolean =
-                repoResultCount > MAX_NUM_FIXES;
-              if (limitFixesBoolean) {
-                void Window.showInformationMessage(
-                  `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
-                );
-                // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
-
-                // TODO: need to append to output file instead of overwriting. Or make three output files...
-                // ! I don't like this approach, but I don't want to edit the input sarif.
-                // ! DCA seems to re-write the input sarif for its round-robin (confirm).
-                const tempOutputTextFiles: string[] = [];
-                const fixDescriptionFiles: string[] = [];
-                const transcriptFiles: string[] = [];
-                const sarifOutputFiles: string[] = [];
-                for (let i = 0; i < MAX_NUM_FIXES; i++) {
-                  // TODO: rewrite all of this file merging logic. De-dup, etc.
-                  tempOutputTextFiles.push(
-                    `${outputTextFile}-${i.toString()}${txtFileExtension}`,
-                  );
-                  fixDescriptionFiles.push(
-                    `${fixDescriptionFile}-${i.toString()}${mdFileExtension}`,
-                  );
-                  transcriptFiles.push(
-                    `${transcriptFile}-${i.toString()}${mdFileExtension}`,
-                  );
-                  sarifOutputFiles.push(
-                    `${sarifOutputFile}-${i.toString()}${sarifFileExtension}`,
-                  );
-                  // TODO: re-write this?
-                  // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
-                  await execAutofix(
-                    logger,
-                    cocofixBin,
-                    [
-                      "--sarif",
-                      sarifFiles[0],
-                      "--source-root",
-                      srcRootPath,
-                      "--model",
-                      "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
-                      "--dev",
-                      "--format",
-                      "text",
-                      "--output",
-                      `${outputTextFile}-${i.toString()}${txtFileExtension}`,
-                      "--diff-style",
-                      "diff",
-                      "--fix-description",
-                      `${fixDescriptionFile}-${i.toString()}${mdFileExtension}`,
-                      "--transcript",
-                      `${transcriptFile}-${i.toString()}${mdFileExtension}`,
-                      "--sarif-output",
-                      `${sarifOutputFile}-${i.toString()}${sarifFileExtension}`,
-                      "--only-alert-number",
-                      i.toString(),
-                    ],
-                    {
-                      cwd: repoAutofixOutputStoragePath,
-                      env: {
-                        CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-                        //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
-                        //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
-                        PATH: process.env.PATH, // ! might not need this.
-                      },
-                    },
-                    true, // ! just set to true for now
-                  );
-                  // ! don't want to return yet, maybe when refactor
-                  // return {
-                  //   outputTextFile,
-                  //   fixDescriptionFile,
-                  //   transcriptFile,
-                  //   sarifOutputFile,
-                  // };
-                }
-                // merge the output files together
-                // ! Caveat that autofix will call each alert "alert 0", so will look a bit odd in the merged output file.
-                await mergeFiles(
-                  tempOutputTextFiles,
-                  outputTextFile + txtFileExtension,
-                  "",
-                  "",
-                  true,
-                );
-                await mergeFiles(
-                  fixDescriptionFiles,
-                  fixDescriptionFile + mdFileExtension,
-                  "",
-                  "",
-                  true,
-                );
-                await mergeFiles(
-                  transcriptFiles,
-                  transcriptFile + mdFileExtension,
-                  "",
-                  "",
-                  true,
-                );
-                await mergeFiles(
-                  sarifOutputFiles,
-                  sarifOutputFile + sarifFileExtension,
-                  "",
-                  "",
-                  true,
-                ); // ! probably won't end up with valid sarif?
-
-                // then delete the individual output files
-              } else {
-                // Call autofix once for all alerts.
-                // ! Refactor so not mostly repeating above.
-                await execAutofix(
-                  logger,
-                  cocofixBin,
-                  [
-                    "--sarif",
-                    sarifFiles[0],
-                    "--source-root",
-                    srcRootPath,
-                    "--model",
-                    "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
-                    "--dev",
-                    "--format",
-                    "text",
-                    "--output",
-                    outputTextFile + txtFileExtension,
-                    "--diff-style",
-                    "diff",
-                    "--fix-description",
-                    fixDescriptionFile + mdFileExtension,
-                    "--transcript",
-                    transcriptFile + mdFileExtension,
-                    "--sarif-output",
-                    sarifOutputFile + sarifFileExtension,
-                  ],
-                  {
-                    cwd: repoAutofixOutputStoragePath,
-                    env: {
-                      CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-                      //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
-                      //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
-                      PATH: process.env.PATH, // ! might not need this.
-                    },
-                  },
-                  true, // ! just set to true for now
-                );
-                // ! don't want to return yet, maybe when refactor
-                // return {
-                //   outputTextFile,
-                //   fixDescriptionFile,
-                //   transcriptFile,
-                //   sarifOutputFile,
-                // };
-              }
-              // Save output text files for later merging into a single markdown file.
-              outputTextFiles.push(outputTextFile + txtFileExtension);
-            },
-            {
-              title: `Processing ${nwo}`,
-              cancellable: false,
-            },
-          ),
-        ),
-      ); // ! end of Promise.all
+      await processSelectedRepositories(
+        selectedRepoNames,
+        variantAnalysisIdStoragePath,
+        sourceRootsStoragePath,
+        autofixOutputStoragePath,
+        localAutofixPath,
+        credentials,
+        logger,
+        outputTextFiles,
+      );
 
       // Output results from ALL repos to a combined markdown file.
       // ! single file case with `mergeFiles` seems fine
@@ -561,6 +319,264 @@ async function getStoragePaths(
     sourceRootsStoragePath,
     autofixOutputStoragePath,
   };
+}
+
+/** TODO */
+async function processSelectedRepositories(
+  selectedRepoNames: string[],
+  variantAnalysisIdStoragePath: string,
+  sourceRootsStoragePath: string,
+  autofixOutputStoragePath: string,
+  localAutofixPath: string,
+  credentials: Credentials,
+  logger: NotificationLogger,
+  outputTextFiles: string[],
+): Promise<void> {
+  await Promise.all(
+    selectedRepoNames.map(async (nwo) =>
+      withProgress(
+        async (progressPerRepo: ProgressCallback) => {
+          // Read the contents of the variant analysis' `repo_task.json` file.
+          const repoStoragePath = join(variantAnalysisIdStoragePath, nwo);
+          const repoTask: VariantAnalysisRepositoryTask =
+            await readRepoTask(repoStoragePath);
+          // Check if the `databaseCommitSha` exists in the file contents.
+          // We need this check to allow the `null` type below, else
+          // TypeScript wants `undefined`.
+          // ! Confirm if should throw an error like this here.
+          if (!repoTask.databaseCommitSha) {
+            throw new Error(`Missing database commit SHA for ${nwo}`);
+          }
+          if (!repoTask.resultCount) {
+            throw new Error(`Missing variant analysis result count for ${nwo}`);
+          }
+          // Get the `databaseCommitSha` used by the variant analysis.
+          // We need this SHA to ensure we download the correct database
+          // version for use with the variant analysis' SARIF. Otherwise,
+          // we will download the latest database version, which may not
+          // be compatible with the SARIF.
+          const actualCommitOid: string | null = repoTask.databaseCommitSha;
+          const repoResultCount = repoTask.resultCount;
+
+          const nwoWithDash = nwo.replace("/", "-");
+
+          // Download the source root for the repo.
+          progressPerRepo(progressUpdate(1, 3, `downloading source root`));
+          const srcRootPath = await downloadPublicCommitSource(
+            nwo,
+            actualCommitOid,
+            sourceRootsStoragePath,
+            credentials,
+            logger,
+          );
+
+          // TODO: Move this before database downloading. Should error out if can't find sarif file.
+          // Get results directory path.
+          const repoResultsStoragePath = join(repoStoragePath, "results");
+          // Find sarif file.
+          progressPerRepo(progressUpdate(2, 3, `getting sarif`));
+          const sarifFiles = await glob(`${repoResultsStoragePath}/**/*.sarif`);
+          if (sarifFiles.length !== 1) {
+            throw new Error(
+              `Expected to find exactly one \`*.sarif\` file for ${nwo}, but found ${sarifFiles.length}.`,
+            );
+          }
+
+          // Create output directories for repo's autofix results.
+          const repoAutofixOutputStoragePath = `${autofixOutputStoragePath}/${nwoWithDash}`;
+          await ensureDir(repoAutofixOutputStoragePath);
+          // TODO: remove the need for these separated extensions when refactor.
+          const txtFileExtension = ".txt";
+          const mdFileExtension = ".md";
+          const sarifFileExtension = ".sarif";
+          const outputTextFile = join(repoAutofixOutputStoragePath, "output");
+          const transcriptFile = join(
+            repoAutofixOutputStoragePath,
+            "transcript",
+          );
+          const fixDescriptionFile = join(
+            repoAutofixOutputStoragePath,
+            "fix-description",
+          );
+          const sarifOutputFile = join(repoAutofixOutputStoragePath, "output");
+
+          // ***** Run autofix on the selected repo.
+          progressPerRepo(progressUpdate(3, 3, `running autofix`));
+
+          // ./bin/cocofix.js --model capi-dev-4o --dev \
+          // --sarif <sarifFiles[0]> \
+          // --source-root <srcRootPath> \
+          // --format=text --output <output.txt> --diff-style diff \ // ! or do text instead of diff if want line of "=" between fixes
+          // --transcript <output-dir>/transcript.md \
+          // --fix-description <output-dir>/fix-description.md \
+          // --sarif-output <output-dir>/output.sarif
+
+          const cocofixBin = `${localAutofixPath}/bin/cocofix.js`; // TODO: unhardcode later; maybe require config like DCA?
+
+          // Limit number of fixes generated.
+          const limitFixesBoolean: boolean = repoResultCount > MAX_NUM_FIXES;
+          if (limitFixesBoolean) {
+            void Window.showInformationMessage(
+              `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
+            );
+            // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
+
+            // TODO: need to append to output file instead of overwriting. Or make three output files...
+            // ! I don't like this approach, but I don't want to edit the input sarif.
+            // ! DCA seems to re-write the input sarif for its round-robin (confirm).
+            const tempOutputTextFiles: string[] = [];
+            const fixDescriptionFiles: string[] = [];
+            const transcriptFiles: string[] = [];
+            const sarifOutputFiles: string[] = [];
+            for (let i = 0; i < MAX_NUM_FIXES; i++) {
+              // TODO: rewrite all of this file merging logic. De-dup, etc.
+              tempOutputTextFiles.push(
+                `${outputTextFile}-${i.toString()}${txtFileExtension}`,
+              );
+              fixDescriptionFiles.push(
+                `${fixDescriptionFile}-${i.toString()}${mdFileExtension}`,
+              );
+              transcriptFiles.push(
+                `${transcriptFile}-${i.toString()}${mdFileExtension}`,
+              );
+              sarifOutputFiles.push(
+                `${sarifOutputFile}-${i.toString()}${sarifFileExtension}`,
+              );
+              // TODO: re-write this?
+              // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
+              await execAutofix(
+                logger,
+                cocofixBin,
+                [
+                  "--sarif",
+                  sarifFiles[0],
+                  "--source-root",
+                  srcRootPath,
+                  "--model",
+                  "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
+                  "--dev",
+                  "--format",
+                  "text",
+                  "--output",
+                  `${outputTextFile}-${i.toString()}${txtFileExtension}`,
+                  "--diff-style",
+                  "diff",
+                  "--fix-description",
+                  `${fixDescriptionFile}-${i.toString()}${mdFileExtension}`,
+                  "--transcript",
+                  `${transcriptFile}-${i.toString()}${mdFileExtension}`,
+                  "--sarif-output",
+                  `${sarifOutputFile}-${i.toString()}${sarifFileExtension}`,
+                  "--only-alert-number",
+                  i.toString(),
+                ],
+                {
+                  cwd: repoAutofixOutputStoragePath,
+                  env: {
+                    CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
+                    //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
+                    //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
+                    PATH: process.env.PATH, // ! might not need this.
+                  },
+                },
+                true, // ! just set to true for now
+              );
+              // ! don't want to return yet, maybe when refactor
+              // return {
+              //   outputTextFile,
+              //   fixDescriptionFile,
+              //   transcriptFile,
+              //   sarifOutputFile,
+              // };
+            }
+            // merge the output files together
+            // ! Caveat that autofix will call each alert "alert 0", so will look a bit odd in the merged output file.
+            await mergeFiles(
+              tempOutputTextFiles,
+              outputTextFile + txtFileExtension,
+              "",
+              "",
+              true,
+            );
+            await mergeFiles(
+              fixDescriptionFiles,
+              fixDescriptionFile + mdFileExtension,
+              "",
+              "",
+              true,
+            );
+            await mergeFiles(
+              transcriptFiles,
+              transcriptFile + mdFileExtension,
+              "",
+              "",
+              true,
+            );
+            await mergeFiles(
+              sarifOutputFiles,
+              sarifOutputFile + sarifFileExtension,
+              "",
+              "",
+              true,
+            ); // ! probably won't end up with valid sarif?
+
+            // then delete the individual output files
+          } else {
+            // Call autofix once for all alerts.
+            // ! Refactor so not mostly repeating above.
+            await execAutofix(
+              logger,
+              cocofixBin,
+              [
+                "--sarif",
+                sarifFiles[0],
+                "--source-root",
+                srcRootPath,
+                "--model",
+                "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
+                "--dev",
+                "--format",
+                "text",
+                "--output",
+                outputTextFile + txtFileExtension,
+                "--diff-style",
+                "diff",
+                "--fix-description",
+                fixDescriptionFile + mdFileExtension,
+                "--transcript",
+                transcriptFile + mdFileExtension,
+                "--sarif-output",
+                sarifOutputFile + sarifFileExtension,
+              ],
+              {
+                cwd: repoAutofixOutputStoragePath,
+                env: {
+                  CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
+                  //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
+                  //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
+                  PATH: process.env.PATH, // ! might not need this.
+                },
+              },
+              true, // ! just set to true for now
+            );
+            // ! don't want to return yet, maybe when refactor
+            // return {
+            //   outputTextFile,
+            //   fixDescriptionFile,
+            //   transcriptFile,
+            //   sarifOutputFile,
+            // };
+          }
+          // Save output text files for later merging into a single markdown file.
+          outputTextFiles.push(outputTextFile + txtFileExtension);
+        },
+        {
+          title: `Processing ${nwo}`,
+          cancellable: false,
+        },
+      ),
+    ),
+  ); // ! end of Promise.all
 }
 
 // TODO: rewrite this?
