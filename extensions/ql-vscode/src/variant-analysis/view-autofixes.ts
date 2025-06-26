@@ -353,163 +353,16 @@ async function processSelectedRepositories(
 
           // * Run autofix.
           progressForRepo(progressUpdate(3, 3, `running autofix`));
-
-          // Get storage paths for the autofix results for this repository.
-          const {
-            repoAutofixOutputStoragePath,
-            outputTextFilePath,
-            transcriptFilePath,
-            fixDescriptionFilePath,
-            sarifOutputFilePath,
-          } = await getRepoStoragePaths(autofixOutputStoragePath, nwo);
-
-          // TODO: unhardcode later, have full bin path in AUTOFIX_PATH env var; maybe require config instead like DCA? And switch for Go autofix.
-          const cocofixBin = join(
-            process.cwd(), // ! or __dirname instead?
+          await runAutofixForRepository(
+            nwo,
+            sarifFile,
+            srcRootPath,
             localAutofixPath,
-            "bin",
-            "cocofix.js",
+            autofixOutputStoragePath,
+            repoTask.resultCount,
+            logger,
+            outputTextFiles,
           );
-
-          // Limit number of fixes generated.
-          const limitFixesBoolean: boolean =
-            repoTask.resultCount > MAX_NUM_FIXES;
-          if (limitFixesBoolean) {
-            void Window.showInformationMessage(
-              `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
-            );
-
-            // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
-            // ! I don't like this approach, but I don't want to edit the input sarif.
-            // ! DCA seems to re-write the input sarif for its round-robin (confirm).
-            const tempOutputTextFiles: string[] = [];
-            const fixDescriptionFiles: string[] = [];
-            const transcriptFiles: string[] = [];
-            const sarifOutputFiles: string[] = [];
-
-            for (let i = 0; i < MAX_NUM_FIXES; i++) {
-              const tempOutputTextFilePath = appendSuffixToFilePath(
-                outputTextFilePath,
-                i.toString(),
-              );
-              const tempFixDescriptionFilePath = appendSuffixToFilePath(
-                fixDescriptionFilePath,
-                i.toString(),
-              );
-              const tempTranscriptFilePath = appendSuffixToFilePath(
-                transcriptFilePath,
-                i.toString(),
-              );
-              const tempSarifOutputFilePath = appendSuffixToFilePath(
-                sarifOutputFilePath,
-                i.toString(),
-              );
-
-              tempOutputTextFiles.push(tempOutputTextFilePath);
-              fixDescriptionFiles.push(tempFixDescriptionFilePath);
-              transcriptFiles.push(tempTranscriptFilePath);
-              sarifOutputFiles.push(tempSarifOutputFilePath);
-
-              // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
-              await execAutofix(
-                logger,
-                cocofixBin,
-                [
-                  "--sarif",
-                  sarifFile,
-                  "--source-root",
-                  srcRootPath,
-                  "--model",
-                  "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
-                  "--dev",
-                  "--format",
-                  "text",
-                  "--output",
-                  tempOutputTextFilePath,
-                  "--diff-style",
-                  "diff", // ! or do text instead of diff if want line of "=" between fixes
-                  "--fix-description",
-                  tempFixDescriptionFilePath,
-                  "--transcript",
-                  tempTranscriptFilePath,
-                  "--sarif-output",
-                  tempSarifOutputFilePath,
-                  "--only-alert-number",
-                  i.toString(),
-                ],
-                {
-                  cwd: repoAutofixOutputStoragePath,
-                  env: {
-                    CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-                    PATH: process.env.PATH, // ! might not need this.
-                  },
-                },
-                true,
-              );
-            }
-            // Merge the output files together
-            // ! Caveat that autofix will call each alert "alert 0", so will look a bit odd in the merged output file.
-            await mergeFiles(
-              tempOutputTextFiles,
-              outputTextFilePath,
-              "",
-              "",
-              true,
-            );
-            await mergeFiles(
-              fixDescriptionFiles,
-              fixDescriptionFilePath,
-              "",
-              "",
-              true,
-            );
-            await mergeFiles(transcriptFiles, transcriptFilePath, "", "", true);
-            await mergeFiles(
-              sarifOutputFiles,
-              sarifOutputFilePath,
-              "",
-              "",
-              true,
-            ); // ! probably won't end up with valid sarif?
-          } else {
-            // Call autofix once for all alerts.
-            // ! Refactor so not mostly repeating above.
-            await execAutofix(
-              logger,
-              cocofixBin,
-              [
-                "--sarif",
-                sarifFile,
-                "--source-root",
-                srcRootPath,
-                "--model",
-                "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
-                "--dev",
-                "--format",
-                "text",
-                "--output",
-                outputTextFilePath,
-                "--diff-style",
-                "diff", // ! or do text instead of diff if want line of "=" between fixes
-                "--fix-description",
-                fixDescriptionFilePath,
-                "--transcript",
-                transcriptFilePath,
-                "--sarif-output",
-                sarifOutputFilePath,
-              ],
-              {
-                cwd: repoAutofixOutputStoragePath,
-                env: {
-                  CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-                  PATH: process.env.PATH, // ! might not need this.
-                },
-              },
-              true,
-            );
-          }
-          // Save output text files for later merging into a single markdown file.
-          outputTextFiles.push(outputTextFilePath);
         },
         {
           title: `Processing ${nwo}`,
@@ -566,7 +419,6 @@ async function getRepoStoragePaths(
       repoAutofixOutputStoragePath,
       "fix-description.md",
     ),
-    sarifOutputFilePath: join(repoAutofixOutputStoragePath, "output.sarif"),
   };
 }
 
@@ -579,6 +431,155 @@ async function getRepoStoragePaths(
 function appendSuffixToFilePath(filePath: string, suffix: string): string {
   const { dir, name, ext } = parse(filePath);
   return join(dir, `${name}-${suffix}${ext}`);
+}
+
+/**
+ * Runs autofix for a given repository (nwo).
+ * @param nwo The full name of the repository (owner/repo).
+ * @param sarifFile The path to the SARIF file.
+ * @param srcRootPath The path to the source root directory.
+ * @param localAutofixPath The path to the local autofix directory.
+ * @param autofixOutputStoragePath The path to the autofix output storage directory.
+ * @param resultCount The number of results to process.
+ * @param logger The logger to use for notifications.
+ * @param outputTextFiles An array to store the output text files for later merging.
+ */
+async function runAutofixForRepository(
+  nwo: string,
+  sarifFile: string,
+  srcRootPath: string,
+  localAutofixPath: string,
+  autofixOutputStoragePath: string,
+  resultCount: number,
+  logger: NotificationLogger,
+  outputTextFiles: string[],
+): Promise<void> {
+  // Get storage paths for the autofix results for this repository.
+  const {
+    repoAutofixOutputStoragePath,
+    outputTextFilePath,
+    transcriptFilePath,
+    fixDescriptionFilePath,
+  } = await getRepoStoragePaths(autofixOutputStoragePath, nwo);
+
+  // TODO: unhardcode later, have full bin path in AUTOFIX_PATH env var; maybe require config instead like DCA? And switch for Go autofix.
+  const cocofixBin = join(
+    process.cwd(), // ! or __dirname instead?
+    localAutofixPath,
+    "bin",
+    "cocofix.js",
+  );
+
+  // Limit number of fixes generated.
+  const limitFixesBoolean: boolean = resultCount > MAX_NUM_FIXES;
+  if (limitFixesBoolean) {
+    void Window.showInformationMessage(
+      `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
+    );
+
+    // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
+    // ! I don't like this approach, but I don't want to edit the input sarif.
+    // ! DCA seems to re-write the input sarif for its round-robin (confirm).
+    const tempOutputTextFiles: string[] = [];
+    const fixDescriptionFiles: string[] = [];
+    const transcriptFiles: string[] = [];
+
+    for (let i = 0; i < MAX_NUM_FIXES; i++) {
+      const tempOutputTextFilePath = appendSuffixToFilePath(
+        outputTextFilePath,
+        i.toString(),
+      );
+      const tempFixDescriptionFilePath = appendSuffixToFilePath(
+        fixDescriptionFilePath,
+        i.toString(),
+      );
+      const tempTranscriptFilePath = appendSuffixToFilePath(
+        transcriptFilePath,
+        i.toString(),
+      );
+
+      tempOutputTextFiles.push(tempOutputTextFilePath);
+      fixDescriptionFiles.push(tempFixDescriptionFilePath);
+      transcriptFiles.push(tempTranscriptFilePath);
+
+      // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
+      await execAutofix(
+        logger,
+        cocofixBin,
+        [
+          "--sarif",
+          sarifFile,
+          "--source-root",
+          srcRootPath,
+          "--model",
+          "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
+          "--dev",
+          "--format",
+          "text",
+          "--output",
+          tempOutputTextFilePath,
+          "--diff-style",
+          "diff", // ! or do text instead of diff if want line of "=" between fixes
+          "--fix-description",
+          tempFixDescriptionFilePath,
+          "--transcript",
+          tempTranscriptFilePath,
+          "--only-alert-number",
+          i.toString(),
+        ],
+        {
+          cwd: repoAutofixOutputStoragePath,
+          env: {
+            CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
+            PATH: process.env.PATH, // ! might not need this.
+          },
+        },
+        true,
+      );
+    }
+    // Merge the output files together.
+    // Caveat that autofix will call each alert "alert 0", which will look a bit odd in the merged output file.
+    await mergeFiles(tempOutputTextFiles, outputTextFilePath, "", "", true);
+    await mergeFiles(fixDescriptionFiles, fixDescriptionFilePath, "", "", true);
+    await mergeFiles(transcriptFiles, transcriptFilePath, "", "", true);
+  } else {
+    // Call autofix once for all alerts.
+    // ! Refactor so not mostly repeating above.
+    await execAutofix(
+      logger,
+      cocofixBin,
+      [
+        "--sarif",
+        sarifFile,
+        "--source-root",
+        srcRootPath,
+        "--model",
+        "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
+        "--dev",
+        "--format",
+        "text",
+        "--output",
+        outputTextFilePath,
+        "--diff-style",
+        "diff", // ! or do text instead of diff if want line of "=" between fixes
+        "--fix-description",
+        fixDescriptionFilePath,
+        "--transcript",
+        transcriptFilePath,
+      ],
+      {
+        cwd: repoAutofixOutputStoragePath,
+        env: {
+          CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
+          PATH: process.env.PATH, // ! might not need this.
+        },
+      },
+      true,
+    );
+  }
+
+  // Save output text files for later merging into a single markdown file.
+  outputTextFiles.push(outputTextFilePath);
 }
 
 // ! Copied from DCA for quick PoC. See https://github.com/github/codeql-dca/blob/4191e85e526a350c40636ab8ff5c18a29a1fba2d/packages/utils/src/util.ts#L236
