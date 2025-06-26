@@ -324,54 +324,36 @@ async function processSelectedRepositories(
   await Promise.all(
     selectedRepoNames.map(async (nwo) =>
       withProgress(
-        async (progressPerRepo: ProgressCallback) => {
-          // Read the contents of the variant analysis' `repo_task.json` file.
+        async (progressForRepo: ProgressCallback) => {
+          // * Get the sarif file.
+          progressForRepo(progressUpdate(1, 3, `getting sarif`));
           const repoStoragePath = join(variantAnalysisIdStoragePath, nwo);
+          const sarifFile = await getSarifFile(repoStoragePath, nwo);
+
+          // Read the contents of the variant analysis' `repo_task.json` file,
+          // and confirm that the `databaseCommitSha` and `resultCount` exist.
           const repoTask: VariantAnalysisRepositoryTask =
             await readRepoTask(repoStoragePath);
-          // Check if the `databaseCommitSha` exists in the file contents.
-          // We need this check to allow the `null` type below, else
-          // TypeScript wants `undefined`.
-          // ! Confirm if should throw an error like this here.
           if (!repoTask.databaseCommitSha) {
             throw new Error(`Missing database commit SHA for ${nwo}`);
           }
           if (!repoTask.resultCount) {
             throw new Error(`Missing variant analysis result count for ${nwo}`);
           }
-          // Get the `databaseCommitSha` used by the variant analysis.
-          // We need this SHA to ensure we download the correct database
-          // version for use with the variant analysis' SARIF. Otherwise,
-          // we will download the latest database version, which may not
-          // be compatible with the SARIF.
-          const actualCommitOid: string | null = repoTask.databaseCommitSha;
-          const repoResultCount = repoTask.resultCount;
 
-          const nwoWithDash = nwo.replace("/", "-");
-
-          // Download the source root for the repo.
-          progressPerRepo(progressUpdate(1, 3, `downloading source root`));
+          // * Download the source root.
+          progressForRepo(progressUpdate(2, 3, `downloading source root`));
           const srcRootPath = await downloadPublicCommitSource(
             nwo,
-            actualCommitOid,
+            repoTask.databaseCommitSha,
             sourceRootsStoragePath,
             credentials,
             logger,
           );
 
-          // TODO: Move this before database downloading. Should error out if can't find sarif file.
-          // Get results directory path.
-          const repoResultsStoragePath = join(repoStoragePath, "results");
-          // Find sarif file.
-          progressPerRepo(progressUpdate(2, 3, `getting sarif`));
-          const sarifFiles = await glob(`${repoResultsStoragePath}/**/*.sarif`);
-          if (sarifFiles.length !== 1) {
-            throw new Error(
-              `Expected to find exactly one \`*.sarif\` file for ${nwo}, but found ${sarifFiles.length}.`,
-            );
-          }
-
+          // * Run autofix.
           // Create output directories for repo's autofix results.
+          const nwoWithDash = nwo.replace("/", "-");
           const repoAutofixOutputStoragePath = `${autofixOutputStoragePath}/${nwoWithDash}`;
           await ensureDir(repoAutofixOutputStoragePath);
           // TODO: remove the need for these separated extensions when refactor.
@@ -390,10 +372,10 @@ async function processSelectedRepositories(
           const sarifOutputFile = join(repoAutofixOutputStoragePath, "output");
 
           // ***** Run autofix on the selected repo.
-          progressPerRepo(progressUpdate(3, 3, `running autofix`));
+          progressForRepo(progressUpdate(3, 3, `running autofix`));
 
           // ./bin/cocofix.js --model capi-dev-4o --dev \
-          // --sarif <sarifFiles[0]> \
+          // --sarif <sarifFile> \
           // --source-root <srcRootPath> \
           // --format=text --output <output.txt> --diff-style diff \ // ! or do text instead of diff if want line of "=" between fixes
           // --transcript <output-dir>/transcript.md \
@@ -403,7 +385,8 @@ async function processSelectedRepositories(
           const cocofixBin = `${localAutofixPath}/bin/cocofix.js`; // TODO: unhardcode later; maybe require config like DCA?
 
           // Limit number of fixes generated.
-          const limitFixesBoolean: boolean = repoResultCount > MAX_NUM_FIXES;
+          const limitFixesBoolean: boolean =
+            repoTask.resultCount > MAX_NUM_FIXES;
           if (limitFixesBoolean) {
             void Window.showInformationMessage(
               `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
@@ -438,7 +421,7 @@ async function processSelectedRepositories(
                 cocofixBin,
                 [
                   "--sarif",
-                  sarifFiles[0],
+                  sarifFile,
                   "--source-root",
                   srcRootPath,
                   "--model",
@@ -518,7 +501,7 @@ async function processSelectedRepositories(
               cocofixBin,
               [
                 "--sarif",
-                sarifFiles[0],
+                sarifFile,
                 "--source-root",
                 srcRootPath,
                 "--model",
@@ -566,6 +549,22 @@ async function processSelectedRepositories(
       ),
     ),
   ); // ! end of Promise.all
+}
+
+async function getSarifFile(
+  repoStoragePath: string,
+  nwo: string,
+): Promise<string> {
+  // Get results directory path.
+  const repoResultsStoragePath = join(repoStoragePath, "results");
+  // Find sarif file.
+  const sarifFiles = await glob(`${repoResultsStoragePath}/**/*.sarif`);
+  if (sarifFiles.length !== 1) {
+    throw new Error(
+      `Expected to find exactly one \`*.sarif\` file for ${nwo}, but found ${sarifFiles.length}.`,
+    );
+  }
+  return sarifFiles[0];
 }
 
 // TODO: rewrite this?
