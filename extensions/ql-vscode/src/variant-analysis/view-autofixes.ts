@@ -9,14 +9,7 @@ import type {
   VariantAnalysisRepositoryTask,
 } from "./shared/variant-analysis";
 import { window as Window } from "vscode";
-import {
-  pathExists,
-  ensureDir,
-  ensureDir as fse_ensureDir,
-  readdir,
-  move,
-  remove,
-} from "fs-extra";
+import { pathExists, ensureDir, readdir, move, remove } from "fs-extra";
 import { join, basename, dirname, parse, join as path_join } from "path";
 import type { Credentials } from "../common/authentication";
 import { withProgress, progressUpdate } from "../common/vscode/progress";
@@ -96,13 +89,10 @@ export async function viewAutofixesForVariantAnalysisResults(
         autofixOutputStoragePath,
       } = await getStoragePaths(variantAnalysisId, storagePath);
 
-      // Initialize an array to store the output files for all repositories.
-      const outputTextFiles: string[] = [];
-
       // Process the selected repositories:
-      // (1) Get sarif
-      // (2) Download source root
-      // (3) Run autofix
+      // * Get sarif
+      // * Download source root
+      // * Run autofix
       progress(
         progressUpdate(
           3,
@@ -110,6 +100,9 @@ export async function viewAutofixesForVariantAnalysisResults(
           `processing ${selectedRepoNames.length} repositories`,
         ),
       );
+      // Initialize an array to store the output files for all repositories.
+      // TODO: consider returning outputTextFiles from `processSelectedRepositories` instead of passing it as arg.
+      const outputTextFiles: string[] = [];
       await processSelectedRepositories(
         selectedRepoNames,
         variantAnalysisIdStoragePath,
@@ -121,30 +114,26 @@ export async function viewAutofixesForVariantAnalysisResults(
         outputTextFiles,
       );
 
-      // Output results from ALL repos to a combined markdown file.
-      // ! single file case with `mergeFiles` seems fine
+      // Output results from all repos to a combined markdown file.
       progress(progressUpdate(4, 4, `finalizing autofix results`));
-      const combinedOutputTextFile = join(
+      const combinedOutputMarkdownFile = join(
         autofixOutputStoragePath,
         "autofix-output.md",
       );
       await mergeFiles(
         outputTextFiles,
-        combinedOutputTextFile,
+        combinedOutputMarkdownFile,
         "<details><summary>Fix suggestion details</summary>\n\n```diff\n",
         "```\n\n</details>\n\n ### Notes\n - placeholder\n\n",
         false,
       );
 
       // Open the combined markdown file.
-      await tryOpenExternalFile(app.commands, combinedOutputTextFile);
+      await tryOpenExternalFile(app.commands, combinedOutputMarkdownFile);
     },
     {
       title: "Generating Autofixes",
-      // ! Make cancellable later, but leave as
-      // ! non-cancellable for now to avoid issues
-      // ! with database downloads, etc.
-      cancellable: false,
+      cancellable: false, // TODO: consider making cancellable.
     },
   );
 }
@@ -669,7 +658,7 @@ export async function downloadPublicCommitSource(
   }
 
   // Create output directory if it doesn't exist
-  await fse_ensureDir(outputPath);
+  await ensureDir(outputPath);
 
   // Define the final checkout directory
   const checkoutDir = path_join(
@@ -752,7 +741,7 @@ export async function downloadPublicCommitSource(
     const extractedSourcePath = path_join(downloadDir, sourceDir);
 
     // Ensure the destination directory's parent exists
-    await fse_ensureDir(dirname(checkoutDir));
+    await ensureDir(dirname(checkoutDir));
 
     // Move the extracted source to the final location
     await move(extractedSourcePath, checkoutDir);
