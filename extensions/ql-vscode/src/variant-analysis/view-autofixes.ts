@@ -30,7 +30,6 @@ import type { execFileSync } from "child_process";
 import { spawn } from "child_process";
 import { readFile, writeFile, unlink, mkdtemp } from "fs/promises";
 import { tryOpenExternalFile } from "../common/vscode/external-files";
-import type { Octokit } from "@octokit/rest";
 import { tmpdir } from "os";
 
 // Limit to three repos when generating autofixes so not sending
@@ -90,30 +89,15 @@ export async function viewAutofixesForVariantAnalysisResults(
         filterSort,
       );
 
-      // Find path to the variant analysis information.
-      const variantAnalysisStoragePath = `${storagePath}/${variantAnalysisId}`;
-      // Create directory path for storing the source roots.
-      const sourceRootsStoragePath = `${variantAnalysisStoragePath}/autofix/source-roots`;
-      // Create directory path for all autofix results.
-      let autofixOutputStoragePath = `${variantAnalysisStoragePath}/autofix/output`;
-      // if the path already exists, assume that it's a previous run and append "-n" to the end of the path
-      // where n is the next available number.
-      if (await pathExists(autofixOutputStoragePath)) {
-        let i = 1;
-        while (await pathExists(autofixOutputStoragePath + i.toString())) {
-          i++;
-        }
-        autofixOutputStoragePath = autofixOutputStoragePath += i.toString();
-      }
+      // Get storage paths for the autofix results.
+      const {
+        variantAnalysisIdStoragePath,
+        sourceRootsStoragePath,
+        autofixOutputStoragePath,
+      } = await getStoragePaths(variantAnalysisId, storagePath);
 
-      // Initialize an array to store the source root paths.
-      const sourceRootPaths: string[] = [];
-      // Initialize an array to store the sarif paths.
-      const sarifPaths: string[] = [];
-      // Initialize an array to store the output files.
+      // Initialize an array to store the output files for all repositories.
       const outputTextFiles: string[] = [];
-
-      const octokit = await credentials.getOctokit();
 
       progress(
         progressUpdate(
@@ -127,7 +111,7 @@ export async function viewAutofixesForVariantAnalysisResults(
           withProgress(
             async (progressInner: ProgressCallback) => {
               // Read the contents of the variant analysis' `repo_task.json` file.
-              const repoStoragePath = join(variantAnalysisStoragePath, nwo);
+              const repoStoragePath = join(variantAnalysisIdStoragePath, nwo);
               const repoTask: VariantAnalysisRepositoryTask =
                 await readRepoTask(repoStoragePath);
               // Check if the `databaseCommitSha` exists in the file contents.
@@ -158,11 +142,9 @@ export async function viewAutofixesForVariantAnalysisResults(
                 nwo,
                 actualCommitOid,
                 sourceRootsStoragePath,
-                octokit,
+                credentials,
                 logger,
               );
-              // Store the source root path in an array to use with autofix.
-              sourceRootPaths.push(srcRootPath);
 
               // TODO: Move this before database downloading. Should error out if can't find sarif file.
               // Get results directory path.
@@ -172,10 +154,7 @@ export async function viewAutofixesForVariantAnalysisResults(
               const sarifFiles = await glob(
                 `${repoResultsStoragePath}/**/*.sarif`,
               );
-              if (sarifFiles.length === 1) {
-                // Store the sarif path in an array to use with autofix.
-                sarifPaths.push(sarifFiles[0]);
-              } else {
+              if (sarifFiles.length !== 1) {
                 throw new Error(
                   `Expected to find exactly one \`*.sarif\` file for ${nwo}, but found ${sarifFiles.length}.`,
                 );
@@ -532,6 +511,58 @@ function getSelectedRepositoryNames(
   return fullNames;
 }
 
+/**
+ * Gets the storage paths needed for the autofix results.
+ * @param variantAnalysisId The ID of the variant analysis.
+ * @param storagePath The base storage path.
+ * @returns The storage paths for the autofix results.
+ */
+async function getStoragePaths(
+  variantAnalysisId: number,
+  storagePath: string,
+): Promise<{
+  variantAnalysisIdStoragePath: string;
+  sourceRootsStoragePath: string;
+  autofixOutputStoragePath: string;
+}> {
+  // Confirm storage path for the variant analysis ID exists.
+  const variantAnalysisIdStoragePath = join(
+    storagePath,
+    variantAnalysisId.toString(),
+  );
+  if (!(await pathExists(variantAnalysisIdStoragePath))) {
+    throw new Error(
+      `Variant analysis storage path does not exist: ${variantAnalysisIdStoragePath}`,
+    );
+  }
+
+  // Storage path for all autofix info.
+  const autofixStoragePath = join(variantAnalysisIdStoragePath, "autofix");
+
+  // Storage path for the source roots used with autofix.
+  const sourceRootsStoragePath = join(autofixStoragePath, "source-roots");
+  await ensureDir(sourceRootsStoragePath);
+
+  // Storage path for the autofix output.
+  let autofixOutputStoragePath = join(autofixStoragePath, "output");
+  // If the path already exists, assume that it's a previous run
+  // and append "-n" to the end of the path where n is the next available number.
+  if (await pathExists(autofixOutputStoragePath)) {
+    let i = 1;
+    while (await pathExists(autofixOutputStoragePath + i.toString())) {
+      i++;
+    }
+    autofixOutputStoragePath = autofixOutputStoragePath += i.toString();
+  }
+  await ensureDir(autofixOutputStoragePath);
+
+  return {
+    variantAnalysisIdStoragePath,
+    sourceRootsStoragePath,
+    autofixOutputStoragePath,
+  };
+}
+
 // TODO: rewrite this?
 // ! Copied from DCA for quick PoC. See https://github.com/github/codeql-dca/blob/4191e85e526a350c40636ab8ff5c18a29a1fba2d/packages/utils/src/util.ts#L236
 function execAutofix(
@@ -613,7 +644,7 @@ export async function downloadPublicCommitSource(
   nwo: string,
   sha: string,
   outputPath: string,
-  octokit: Octokit,
+  credentials: Credentials,
   logger: NotificationLogger,
 ): Promise<string> {
   const [owner, repo] = nwo.split("/");
@@ -644,6 +675,8 @@ export async function downloadPublicCommitSource(
     // Create a temporary directory for downloading
     const downloadDir = await mkdtemp(path_join(tmpdir(), "download-source-"));
     const tarballPath = path_join(downloadDir, "source.tar.gz");
+
+    const octokit = await credentials.getOctokit();
 
     // Get the tarball URL
     const { url } = await octokit.rest.repos.downloadTarballArchive({
