@@ -352,37 +352,24 @@ async function processSelectedRepositories(
           );
 
           // * Run autofix.
-          // Create output directories for repo's autofix results.
-          const nwoWithDash = nwo.replace("/", "-");
-          const repoAutofixOutputStoragePath = `${autofixOutputStoragePath}/${nwoWithDash}`;
-          await ensureDir(repoAutofixOutputStoragePath);
-          // TODO: remove the need for these separated extensions when refactor.
-          const txtFileExtension = ".txt";
-          const mdFileExtension = ".md";
-          const sarifFileExtension = ".sarif";
-          const outputTextFile = join(repoAutofixOutputStoragePath, "output");
-          const transcriptFile = join(
-            repoAutofixOutputStoragePath,
-            "transcript",
-          );
-          const fixDescriptionFile = join(
-            repoAutofixOutputStoragePath,
-            "fix-description",
-          );
-          const sarifOutputFile = join(repoAutofixOutputStoragePath, "output");
-
-          // ***** Run autofix on the selected repo.
           progressForRepo(progressUpdate(3, 3, `running autofix`));
 
-          // ./bin/cocofix.js --model capi-dev-4o --dev \
-          // --sarif <sarifFile> \
-          // --source-root <srcRootPath> \
-          // --format=text --output <output.txt> --diff-style diff \ // ! or do text instead of diff if want line of "=" between fixes
-          // --transcript <output-dir>/transcript.md \
-          // --fix-description <output-dir>/fix-description.md \
-          // --sarif-output <output-dir>/output.sarif
+          // Get storage paths for the autofix results for this repository.
+          const {
+            repoAutofixOutputStoragePath,
+            outputTextFilePath,
+            transcriptFilePath,
+            fixDescriptionFilePath,
+            sarifOutputFilePath,
+          } = await getRepoStoragePaths(autofixOutputStoragePath, nwo);
 
-          const cocofixBin = `${localAutofixPath}/bin/cocofix.js`; // TODO: unhardcode later; maybe require config like DCA?
+          // TODO: unhardcode later, have full bin path in AUTOFIX_PATH env var; maybe require config instead like DCA? And switch for Go autofix.
+          const cocofixBin = join(
+            process.cwd(), // ! or __dirname instead?
+            localAutofixPath,
+            "bin",
+            "cocofix.js",
+          );
 
           // Limit number of fixes generated.
           const limitFixesBoolean: boolean =
@@ -391,30 +378,38 @@ async function processSelectedRepositories(
             void Window.showInformationMessage(
               `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
             );
-            // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
 
-            // TODO: need to append to output file instead of overwriting. Or make three output files...
+            // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
             // ! I don't like this approach, but I don't want to edit the input sarif.
             // ! DCA seems to re-write the input sarif for its round-robin (confirm).
             const tempOutputTextFiles: string[] = [];
             const fixDescriptionFiles: string[] = [];
             const transcriptFiles: string[] = [];
             const sarifOutputFiles: string[] = [];
+
             for (let i = 0; i < MAX_NUM_FIXES; i++) {
-              // TODO: rewrite all of this file merging logic. De-dup, etc.
-              tempOutputTextFiles.push(
-                `${outputTextFile}-${i.toString()}${txtFileExtension}`,
+              const tempOutputTextFilePath = appendSuffixToFilePath(
+                outputTextFilePath,
+                i.toString(),
               );
-              fixDescriptionFiles.push(
-                `${fixDescriptionFile}-${i.toString()}${mdFileExtension}`,
+              const tempFixDescriptionFilePath = appendSuffixToFilePath(
+                fixDescriptionFilePath,
+                i.toString(),
               );
-              transcriptFiles.push(
-                `${transcriptFile}-${i.toString()}${mdFileExtension}`,
+              const tempTranscriptFilePath = appendSuffixToFilePath(
+                transcriptFilePath,
+                i.toString(),
               );
-              sarifOutputFiles.push(
-                `${sarifOutputFile}-${i.toString()}${sarifFileExtension}`,
+              const tempSarifOutputFilePath = appendSuffixToFilePath(
+                sarifOutputFilePath,
+                i.toString(),
               );
-              // TODO: re-write this?
+
+              tempOutputTextFiles.push(tempOutputTextFilePath);
+              fixDescriptionFiles.push(tempFixDescriptionFilePath);
+              transcriptFiles.push(tempTranscriptFilePath);
+              sarifOutputFiles.push(tempSarifOutputFilePath);
+
               // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
               await execAutofix(
                 logger,
@@ -430,15 +425,15 @@ async function processSelectedRepositories(
                   "--format",
                   "text",
                   "--output",
-                  `${outputTextFile}-${i.toString()}${txtFileExtension}`,
+                  tempOutputTextFilePath,
                   "--diff-style",
-                  "diff",
+                  "diff", // ! or do text instead of diff if want line of "=" between fixes
                   "--fix-description",
-                  `${fixDescriptionFile}-${i.toString()}${mdFileExtension}`,
+                  tempFixDescriptionFilePath,
                   "--transcript",
-                  `${transcriptFile}-${i.toString()}${mdFileExtension}`,
+                  tempTranscriptFilePath,
                   "--sarif-output",
-                  `${sarifOutputFile}-${i.toString()}${sarifFileExtension}`,
+                  tempSarifOutputFilePath,
                   "--only-alert-number",
                   i.toString(),
                 ],
@@ -446,53 +441,36 @@ async function processSelectedRepositories(
                   cwd: repoAutofixOutputStoragePath,
                   env: {
                     CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-                    //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
-                    //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
                     PATH: process.env.PATH, // ! might not need this.
                   },
                 },
-                true, // ! just set to true for now
+                true,
               );
-              // ! don't want to return yet, maybe when refactor
-              // return {
-              //   outputTextFile,
-              //   fixDescriptionFile,
-              //   transcriptFile,
-              //   sarifOutputFile,
-              // };
             }
-            // merge the output files together
+            // Merge the output files together
             // ! Caveat that autofix will call each alert "alert 0", so will look a bit odd in the merged output file.
             await mergeFiles(
               tempOutputTextFiles,
-              outputTextFile + txtFileExtension,
+              outputTextFilePath,
               "",
               "",
               true,
             );
             await mergeFiles(
               fixDescriptionFiles,
-              fixDescriptionFile + mdFileExtension,
+              fixDescriptionFilePath,
               "",
               "",
               true,
             );
-            await mergeFiles(
-              transcriptFiles,
-              transcriptFile + mdFileExtension,
-              "",
-              "",
-              true,
-            );
+            await mergeFiles(transcriptFiles, transcriptFilePath, "", "", true);
             await mergeFiles(
               sarifOutputFiles,
-              sarifOutputFile + sarifFileExtension,
+              sarifOutputFilePath,
               "",
               "",
               true,
             ); // ! probably won't end up with valid sarif?
-
-            // then delete the individual output files
           } else {
             // Call autofix once for all alerts.
             // ! Refactor so not mostly repeating above.
@@ -510,37 +488,28 @@ async function processSelectedRepositories(
                 "--format",
                 "text",
                 "--output",
-                outputTextFile + txtFileExtension,
+                outputTextFilePath,
                 "--diff-style",
-                "diff",
+                "diff", // ! or do text instead of diff if want line of "=" between fixes
                 "--fix-description",
-                fixDescriptionFile + mdFileExtension,
+                fixDescriptionFilePath,
                 "--transcript",
-                transcriptFile + mdFileExtension,
+                transcriptFilePath,
                 "--sarif-output",
-                sarifOutputFile + sarifFileExtension,
+                sarifOutputFilePath,
               ],
               {
                 cwd: repoAutofixOutputStoragePath,
                 env: {
                   CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-                  //   CAPI_DEV_KEY: getSecret(config["capi-key"]), // ! try without this since already set locally
-                  //   GH_TOKEN: octoman.getToken(slug2repo(source.info.repository)), // ! try without this since I don't think I've been using when running locally...
                   PATH: process.env.PATH, // ! might not need this.
                 },
               },
-              true, // ! just set to true for now
+              true,
             );
-            // ! don't want to return yet, maybe when refactor
-            // return {
-            //   outputTextFile,
-            //   fixDescriptionFile,
-            //   transcriptFile,
-            //   sarifOutputFile,
-            // };
           }
           // Save output text files for later merging into a single markdown file.
-          outputTextFiles.push(outputTextFile + txtFileExtension);
+          outputTextFiles.push(outputTextFilePath);
         },
         {
           title: `Processing ${nwo}`,
@@ -551,6 +520,12 @@ async function processSelectedRepositories(
   ); // ! end of Promise.all
 }
 
+/**
+ * Gets the path to a SARIF file in a given `repoStoragePath`.
+ * @param repoStoragePath The storage path for the repository.
+ * @param nwo The full name of the repository (owner/repo).
+ * @returns The path to the SARIF file.
+ */
 async function getSarifFile(
   repoStoragePath: string,
   nwo: string,
@@ -567,7 +542,45 @@ async function getSarifFile(
   return sarifFiles[0];
 }
 
-// TODO: rewrite this?
+/**
+ * Gets the storage paths for the autofix results for a given repository.
+ * @param autofixOutputStoragePath The base storage path for the autofix output.
+ * @param nwo The full name of the repository (owner/repo).
+ * @returns An object containing the storage paths for the autofix results.
+ */
+async function getRepoStoragePaths(
+  autofixOutputStoragePath: string,
+  nwo: string,
+) {
+  // Create output directories for repo's autofix results.
+  const repoAutofixOutputStoragePath = join(
+    autofixOutputStoragePath,
+    nwo.replaceAll("/", "-"),
+  );
+  await ensureDir(repoAutofixOutputStoragePath);
+  return {
+    repoAutofixOutputStoragePath,
+    outputTextFilePath: join(repoAutofixOutputStoragePath, "output.txt"),
+    transcriptFilePath: join(repoAutofixOutputStoragePath, "transcript.md"),
+    fixDescriptionFilePath: join(
+      repoAutofixOutputStoragePath,
+      "fix-description.md",
+    ),
+    sarifOutputFilePath: join(repoAutofixOutputStoragePath, "output.sarif"),
+  };
+}
+
+/**
+ * Creates a new file path by appending the given suffix.
+ * @param filePath The original file path.
+ * @param suffix The suffix to append to the file name (before the extension).
+ * @returns The new file path with the suffix appended.
+ */
+function appendSuffixToFilePath(filePath: string, suffix: string): string {
+  const { dir, name, ext } = parse(filePath);
+  return join(dir, `${name}-${suffix}${ext}`);
+}
+
 // ! Copied from DCA for quick PoC. See https://github.com/github/codeql-dca/blob/4191e85e526a350c40636ab8ff5c18a29a1fba2d/packages/utils/src/util.ts#L236
 function execAutofix(
   logger: NotificationLogger,
@@ -596,6 +609,7 @@ function execAutofix(
   });
 }
 
+// TODO: refactor this function and the file-merging logic in general.
 async function mergeFiles(
   inputFiles: string[],
   outputFile: string,
@@ -608,6 +622,10 @@ async function mergeFiles(
     // const contents = await Promise.all(
     //   inputFiles.map((file) => readFile(file, "utf8")),
     // );
+
+    if (inputFiles.length === 0 || !(await pathExists(inputFiles[0]))) {
+      return; // Nothing to merge
+    } // TODO: debug issue with fix-description.md not being created
 
     // Merge the files with separators
     const contents = await Promise.all(
@@ -642,8 +660,8 @@ async function mergeFiles(
   }
 }
 
-// ! adapted from DCA:
-// ! https://github.com/github/codeql-dca/blob/e53cf41d52df20662291ecd99b39d018b2cdf917/packages/utils/src/githubAPI.ts#L2213
+// ! Idea adapted from DCA and mostly re-written by Copilot
+// ! See https://github.com/github/codeql-dca/blob/e53cf41d52df20662291ecd99b39d018b2cdf917/packages/utils/src/githubAPI.ts#L2213
 export async function downloadPublicCommitSource(
   nwo: string,
   sha: string,
