@@ -34,18 +34,11 @@ const MAX_NUM_REPOS: number = 3;
 const MAX_NUM_FIXES: number = 3;
 
 // ! Main TODOs:
-
-// ! For myself:
-// ! - Refactor most of `viewAutofixesForVariantAnalysisResults` into helper functions.
-// ! - Re-organize code order. Fail early if missing anything that is required to run autofix.
-
 // ! For PR, if go that direction:
 // ! - Canary with error for non-internal users.
-// ! - More error handling.
+// ! - More error handling?
 // ! - Testing.
 // ! - Clean up progress handling.
-
-// ! See other notes and comments below for more TODOs.
 
 /**
  * TODO: doc
@@ -231,7 +224,6 @@ function getSelectedRepositoryNames(
   variantAnalysis: VariantAnalysis,
   filterSort: RepositoriesFilterSortStateWithIds,
 ): string[] {
-  // TODO: consider sharing first two parts with `copyRepoListToClipboard`.
   // Get the repositories that were selected by the user.
   const filteredRepositories = filterAndSortRepositoriesWithResults(
     variantAnalysis.scannedRepos,
@@ -370,7 +362,7 @@ async function processSelectedRepositories(
         },
       ),
     ),
-  ); // ! end of Promise.all
+  );
 }
 
 /**
@@ -462,13 +454,9 @@ async function runAutofixForRepository(
     fixDescriptionFilePath,
   } = await getRepoStoragePaths(autofixOutputStoragePath, nwo);
 
-  // TODO: unhardcode later, have full bin path in AUTOFIX_PATH env var; maybe require config instead like DCA? And switch for Go autofix.
-  const cocofixBin = join(
-    process.cwd(), // ! or __dirname instead?
-    localAutofixPath,
-    "bin",
-    "cocofix.js",
-  );
+  // TODO: expect full bin path in AUTOFIX_PATH env var; maybe require config instead like DCA? And switch for Go autofix.
+  const cocofixBin = join(process.cwd(), localAutofixPath, "bin", "cocofix.js");
+  // const cocofixBin = `${localAutofixPath}/bin/cocofix.js`;
 
   // Limit number of fixes generated.
   const limitFixesBoolean: boolean = resultCount > MAX_NUM_FIXES;
@@ -477,9 +465,8 @@ async function runAutofixForRepository(
       `Only generating autofixes for the first ${MAX_NUM_FIXES} alerts for ${nwo}.`,
     );
 
-    // Call autofix in a loop, for the first MAX_NUM_FIXES alerts
-    // ! I don't like this approach, but I don't want to edit the input sarif.
-    // ! DCA seems to re-write the input sarif for its round-robin (confirm).
+    // Call autofix in a loop for the first MAX_NUM_FIXES alerts.
+    // Not an ideal solution, but avoids modifying the input SARIF file.
     const tempOutputTextFiles: string[] = [];
     const fixDescriptionFiles: string[] = [];
     const transcriptFiles: string[] = [];
@@ -502,41 +489,19 @@ async function runAutofixForRepository(
       fixDescriptionFiles.push(tempFixDescriptionFilePath);
       transcriptFiles.push(tempTranscriptFilePath);
 
-      // ! Copying DCA for quick PoC. See https://github.com/github/codeql-dca/blob/5a924ef3362dd1d37cd6cc0591554c4a96921754/packages/cli/src/commands/autofix/run-cocofix-on-results.ts#L61
-      await execAutofix(
+      await runAutofixOnResults(
         logger,
         cocofixBin,
-        [
-          "--sarif",
-          sarifFile,
-          "--source-root",
-          srcRootPath,
-          "--model",
-          "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
-          "--dev",
-          "--format",
-          "text",
-          "--output",
-          tempOutputTextFilePath,
-          "--diff-style",
-          "diff", // ! or do text instead of diff if want line of "=" between fixes
-          "--fix-description",
-          tempFixDescriptionFilePath,
-          "--transcript",
-          tempTranscriptFilePath,
-          "--only-alert-number",
-          i.toString(),
-        ],
-        {
-          cwd: repoAutofixOutputStoragePath,
-          env: {
-            CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-            PATH: process.env.PATH, // ! might not need this.
-          },
-        },
-        true,
+        sarifFile,
+        srcRootPath,
+        tempOutputTextFilePath,
+        tempFixDescriptionFilePath,
+        tempTranscriptFilePath,
+        repoAutofixOutputStoragePath,
+        i,
       );
     }
+
     // Merge the output files together.
     // Caveat that autofix will call each alert "alert 0", which will look a bit odd in the merged output file.
     await mergeFiles(tempOutputTextFiles, outputTextFilePath, "", "", true);
@@ -544,37 +509,15 @@ async function runAutofixForRepository(
     await mergeFiles(transcriptFiles, transcriptFilePath, "", "", true);
   } else {
     // Call autofix once for all alerts.
-    // ! Refactor so not mostly repeating above.
-    await execAutofix(
+    await runAutofixOnResults(
       logger,
       cocofixBin,
-      [
-        "--sarif",
-        sarifFile,
-        "--source-root",
-        srcRootPath,
-        "--model",
-        "capi-dev-4o", // ! Note: this requires latest version of cocofix; either expect that or try to find which version user has installed
-        "--dev",
-        "--format",
-        "text",
-        "--output",
-        outputTextFilePath,
-        "--diff-style",
-        "diff", // ! or do text instead of diff if want line of "=" between fixes
-        "--fix-description",
-        fixDescriptionFilePath,
-        "--transcript",
-        transcriptFilePath,
-      ],
-      {
-        cwd: repoAutofixOutputStoragePath,
-        env: {
-          CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
-          PATH: process.env.PATH, // ! might not need this.
-        },
-      },
-      true,
+      sarifFile,
+      srcRootPath,
+      outputTextFilePath,
+      fixDescriptionFilePath,
+      transcriptFilePath,
+      repoAutofixOutputStoragePath,
     );
   }
 
@@ -582,7 +525,85 @@ async function runAutofixForRepository(
   outputTextFiles.push(outputTextFilePath);
 }
 
-// ! Copied from DCA for quick PoC. See https://github.com/github/codeql-dca/blob/4191e85e526a350c40636ab8ff5c18a29a1fba2d/packages/utils/src/util.ts#L236
+/**
+ * Creates the arguments that vary depending on the run.
+ */
+function createVariableArgs(
+  outputTextFilePath: string,
+  fixDescriptionFilePath: string,
+  transcriptFilePath: string,
+  alertNumber?: number, // Optional parameter for specific alert
+): string[] {
+  const args = [
+    "--output",
+    outputTextFilePath,
+    "--fix-description",
+    fixDescriptionFilePath,
+    "--transcript",
+    transcriptFilePath,
+  ];
+
+  // Add alert number argument if provided
+  if (alertNumber !== undefined) {
+    args.push("--only-alert-number", alertNumber.toString());
+  }
+
+  return args;
+}
+
+/**
+ * Runs autofix with the given parameters.
+ */
+async function runAutofixOnResults(
+  logger: NotificationLogger,
+  cocofixBin: string,
+  sarifFile: string,
+  srcRootPath: string,
+  outputTextFilePath: string,
+  fixDescriptionFilePath: string,
+  transcriptFilePath: string,
+  workDir: string,
+  alertNumber?: number, // Optional parameter for specific alert
+): Promise<void> {
+  // Set up args for autofix command.
+  const fixedArgs = [
+    "--sarif",
+    sarifFile,
+    "--source-root",
+    srcRootPath,
+    "--model",
+    "capi-dev-4o", // may fail with older versions of cocofix
+    "--dev",
+    "--format",
+    "text",
+    "--diff-style",
+    "diff", // could do "text" instead if want line of "=" between fixes
+  ];
+  const varArgs = createVariableArgs(
+    outputTextFilePath,
+    fixDescriptionFilePath,
+    transcriptFilePath,
+    alertNumber,
+  );
+
+  const cocofixArgs = [...fixedArgs, ...varArgs];
+
+  await execAutofix(
+    logger,
+    cocofixBin,
+    cocofixArgs,
+    {
+      cwd: workDir,
+      env: {
+        CAPI_DEV_KEY: process.env.CAPI_DEV_KEY,
+        PATH: process.env.PATH,
+      },
+    },
+    true,
+  );
+}
+
+/** TODO */
 function execAutofix(
   logger: NotificationLogger,
   bin: string,
@@ -653,7 +674,7 @@ async function mergeFiles(
 
     // Delete original files
     if (deleteOriginalFiles) {
-      await Promise.all(inputFiles.map((file) => unlink(file))); // ! should maybe use `remove` here instead of `unlink`
+      await Promise.all(inputFiles.map((file) => unlink(file))); // TODO: should maybe use `remove` here instead of `unlink`
     }
   } catch (error) {
     console.error("Error merging files:", error);
@@ -661,8 +682,8 @@ async function mergeFiles(
   }
 }
 
-// ! Idea adapted from DCA and mostly re-written by Copilot
-// ! See https://github.com/github/codeql-dca/blob/e53cf41d52df20662291ecd99b39d018b2cdf917/packages/utils/src/githubAPI.ts#L2213
+// TODO: confirm logic looks okay and maybe add timeouts?
+/** TODO */
 export async function downloadPublicCommitSource(
   nwo: string,
   sha: string,
