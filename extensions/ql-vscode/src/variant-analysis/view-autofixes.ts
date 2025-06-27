@@ -326,7 +326,9 @@ async function processSelectedRepositories(
           }
 
           // * Download the source root.
-          progressForRepo(progressUpdate(2, 3, `downloading source root`));
+          // Using `0` as the progress step to force a dynamic vs static progress bar.
+          // Consider using `reportStreamProgress` as a future enhancement.
+          progressForRepo(progressUpdate(0, 3, `downloading source root`));
           const srcRootPath = await downloadPublicCommitSource(
             nwo,
             repoTask.databaseCommitSha,
@@ -336,7 +338,7 @@ async function processSelectedRepositories(
           );
 
           // * Run autofix.
-          progressForRepo(progressUpdate(3, 3, `running autofix`));
+          progressForRepo(progressUpdate(2, 3, `running autofix`));
           await runAutofixForRepository(
             nwo,
             sarifFile,
