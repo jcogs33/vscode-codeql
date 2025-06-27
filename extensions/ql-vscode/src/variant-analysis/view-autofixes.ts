@@ -24,6 +24,7 @@ import { spawn } from "child_process";
 import { readFile, writeFile, unlink, mkdtemp } from "fs/promises";
 import { tryOpenExternalFile } from "../common/vscode/external-files";
 import { tmpdir } from "os";
+import { pluralize } from "../common/word";
 
 // Limit to three repos when generating autofixes so not sending
 // too many requests to autofix. Since we only need to validate
@@ -55,11 +56,11 @@ export async function viewAutofixesForVariantAnalysisResults(
       }
 
       // Get the path to the local autofix installation.
-      progress(progressUpdate(1, 4, `checking for local autofix installation`));
+      progress(progressUpdate(1, 4, `Checking for local autofix installation`));
       const localAutofixPath = findLocalAutofix();
 
       // Generate the query help and output it to the override directory.
-      progress(progressUpdate(2, 4, `generating query help override`));
+      progress(progressUpdate(2, 4, `Generating query help override`));
       await overrideQueryHelp(variantAnalysis, cliServer, localAutofixPath);
 
       // Get the full names (nwos) of the selected repositories.
@@ -83,7 +84,7 @@ export async function viewAutofixesForVariantAnalysisResults(
         progressUpdate(
           3,
           4,
-          `processing ${selectedRepoNames.length} repositories`,
+          `Processing ${pluralize(selectedRepoNames.length, "repository", "repositories")}`,
         ),
       );
       // Initialize an array to store the output files for all repositories.
@@ -98,7 +99,7 @@ export async function viewAutofixesForVariantAnalysisResults(
       );
 
       // Output results from all repos to a combined markdown file.
-      progress(progressUpdate(4, 4, `finalizing autofix results`));
+      progress(progressUpdate(4, 4, `Finalizing autofix results`));
       const combinedOutputMarkdownFile = join(
         autofixOutputStoragePath,
         "autofix-output.md",
@@ -310,7 +311,7 @@ async function processSelectedRepositories(
       withProgress(
         async (progressForRepo: ProgressCallback) => {
           // * Get the sarif file.
-          progressForRepo(progressUpdate(1, 3, `getting sarif`));
+          progressForRepo(progressUpdate(1, 3, `Getting sarif`));
           const repoStoragePath = join(variantAnalysisIdStoragePath, nwo);
           const sarifFile = await getSarifFile(repoStoragePath, nwo);
 
@@ -328,7 +329,7 @@ async function processSelectedRepositories(
           // * Download the source root.
           // Using `0` as the progress step to force a dynamic vs static progress bar.
           // Consider using `reportStreamProgress` as a future enhancement.
-          progressForRepo(progressUpdate(0, 3, `downloading source root`));
+          progressForRepo(progressUpdate(0, 3, `Downloading source root`));
           const srcRootPath = await downloadPublicCommitSource(
             nwo,
             repoTask.databaseCommitSha,
@@ -338,7 +339,7 @@ async function processSelectedRepositories(
           );
 
           // * Run autofix.
-          progressForRepo(progressUpdate(2, 3, `running autofix`));
+          progressForRepo(progressUpdate(2, 3, `Running autofix`));
           await runAutofixForRepository(
             nwo,
             sarifFile,
