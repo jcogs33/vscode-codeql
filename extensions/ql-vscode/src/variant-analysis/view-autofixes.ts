@@ -33,15 +33,8 @@ const MAX_NUM_REPOS: number = 3;
 // Similarly, limit to three fixes per repo.
 const MAX_NUM_FIXES: number = 3;
 
-// ! Main TODOs:
-// ! For PR, if go that direction:
-// ! - Canary with error for non-internal users.
-// ! - More error handling?
-// ! - Testing.
-// ! - Clean up progress handling.
-
 /**
- * TODO: doc
+ * Generates autofixes for the results of a variant analysis.
  */
 export async function viewAutofixesForVariantAnalysisResults(
   variantAnalysisId: number,
@@ -94,9 +87,7 @@ export async function viewAutofixesForVariantAnalysisResults(
         ),
       );
       // Initialize an array to store the output files for all repositories.
-      // TODO: consider returning outputTextFiles from `processSelectedRepositories` instead of passing it as arg.
-      const outputTextFiles: string[] = [];
-      await processSelectedRepositories(
+      const outputTextFiles = await processSelectedRepositories(
         selectedRepoNames,
         variantAnalysisIdStoragePath,
         sourceRootsStoragePath,
@@ -104,7 +95,6 @@ export async function viewAutofixesForVariantAnalysisResults(
         localAutofixPath,
         credentials,
         logger,
-        outputTextFiles,
       );
 
       // Output results from all repos to a combined markdown file.
@@ -126,7 +116,7 @@ export async function viewAutofixesForVariantAnalysisResults(
     },
     {
       title: "Generating Autofixes",
-      cancellable: false, // TODO: consider making cancellable.
+      cancellable: false, // not cancellable for now
     },
   );
 }
@@ -139,7 +129,7 @@ export async function viewAutofixesForVariantAnalysisResults(
  */
 function findLocalAutofix(): string {
   // TODO: consider use PATH env var instead of separate AUTOFIX_PATH var.
-  // TODO: maybe configure differently instead (config file, user setting, etc.)
+  // TODO: maybe configure differently instead (config file like DCA, user setting, etc.)
   // TODO: document the need for this environment variable.
   const localAutofixPath = process.env.AUTOFIX_PATH;
   if (!localAutofixPath) {
@@ -302,7 +292,9 @@ async function getStoragePaths(
   };
 }
 
-/** TODO */
+/**
+ * Processes the selected repositories for autofix generation.
+ */
 async function processSelectedRepositories(
   selectedRepoNames: string[],
   variantAnalysisIdStoragePath: string,
@@ -311,8 +303,8 @@ async function processSelectedRepositories(
   localAutofixPath: string,
   credentials: Credentials,
   logger: NotificationLogger,
-  outputTextFiles: string[],
-): Promise<void> {
+): Promise<string[]> {
+  const outputTextFiles: string[] = [];
   await Promise.all(
     selectedRepoNames.map(async (nwo) =>
       withProgress(
@@ -363,6 +355,7 @@ async function processSelectedRepositories(
       ),
     ),
   );
+  return outputTextFiles;
 }
 
 /**
@@ -454,7 +447,7 @@ async function runAutofixForRepository(
     fixDescriptionFilePath,
   } = await getRepoStoragePaths(autofixOutputStoragePath, nwo);
 
-  // TODO: expect full bin path in AUTOFIX_PATH env var; maybe require config instead like DCA? And switch for Go autofix.
+  // TODO: expect full bin path in AUTOFIX_PATH env var?
   const cocofixBin = join(process.cwd(), localAutofixPath, "bin", "cocofix.js");
   // const cocofixBin = `${localAutofixPath}/bin/cocofix.js`;
 
@@ -603,7 +596,9 @@ async function runAutofixOnResults(
   );
 }
 
-/** TODO */
+/**
+ * Executes the autofix command.
+ */
 function execAutofix(
   logger: NotificationLogger,
   bin: string,
@@ -631,7 +626,14 @@ function execAutofix(
   });
 }
 
-// TODO: refactor this function and the file-merging logic in general.
+/**
+ * Merges multiple files into a single file with optional separators.
+ * @param inputFiles - The list of input files to merge.
+ * @param outputFile - The output file path.
+ * @param frontSeparator - The separator to add before each file's content.
+ * @param backSeparator - The separator to add after each file's content.
+ * @param deleteOriginalFiles - Whether to delete the original input files after merging.
+ */
 async function mergeFiles(
   inputFiles: string[],
   outputFile: string,
@@ -640,14 +642,16 @@ async function mergeFiles(
   deleteOriginalFiles: boolean = true,
 ): Promise<void> {
   try {
-    // // Merge the files
-    // const contents = await Promise.all(
-    //   inputFiles.map((file) => readFile(file, "utf8")),
-    // );
-
-    if (inputFiles.length === 0 || !(await pathExists(inputFiles[0]))) {
-      return; // Nothing to merge
-    } // TODO: debug issue with fix-description.md not being created
+    // Check if any input files do not exist and return if so.
+    const pathChecks = await Promise.all(
+      inputFiles.map(async (path) => ({
+        exists: await pathExists(path),
+      })),
+    );
+    const anyPathMissing = pathChecks.some((check) => !check.exists);
+    if (inputFiles.length === 0 || anyPathMissing) {
+      return;
+    }
 
     // Merge the files with separators
     const contents = await Promise.all(
@@ -658,9 +662,7 @@ async function mergeFiles(
     );
 
     // Add owner/repo header above each set of contents if the separators are not empty strings
-    // ! this is getting too specific; separate/refactor this condition
     if (frontSeparator !== "" && backSeparator !== "") {
-      // ! hopefully I can assume that the content order matches the input file order (confirm)
       for (let i = 0; i < contents.length; i++) {
         // extract the owner-repo folder name from the input file path
         const parentDir = dirname(inputFiles[i]);
@@ -674,7 +676,7 @@ async function mergeFiles(
 
     // Delete original files
     if (deleteOriginalFiles) {
-      await Promise.all(inputFiles.map((file) => unlink(file))); // TODO: should maybe use `remove` here instead of `unlink`
+      await Promise.all(inputFiles.map((file) => unlink(file)));
     }
   } catch (error) {
     console.error("Error merging files:", error);
@@ -682,9 +684,10 @@ async function mergeFiles(
   }
 }
 
-// TODO: confirm logic looks okay and maybe add timeouts?
-/** TODO */
-export async function downloadPublicCommitSource(
+/**
+ * Downloads the source code of a public commit from a GitHub repository.
+ */
+async function downloadPublicCommitSource(
   nwo: string,
   sha: string,
   outputPath: string,
