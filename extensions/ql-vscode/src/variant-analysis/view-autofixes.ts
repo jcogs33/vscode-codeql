@@ -567,6 +567,7 @@ async function runAutofixOnResults(
     "--model",
     "capi-dev-4o", // may fail with older versions of cocofix
     "--dev",
+    "--no-cache",
     "--format",
     "text",
     "--diff-style",
